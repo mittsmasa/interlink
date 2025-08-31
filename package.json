@@ -21,6 +21,7 @@
     "@types/react-dom": "^19",
     "@tailwindcss/postcss": "^4",
     "tailwindcss": "^4",
-    "@biomejs/biome": "2.2.0"
+    "@biomejs/biome": "2.2.0",
+    "lefthook": "1.9.1"
   }
 }
