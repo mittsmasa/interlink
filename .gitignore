@@ -39,3 +39,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# plan files (keep directory structure)
+/.plan/*
+!/.plan/.gitkeep

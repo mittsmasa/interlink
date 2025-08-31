@@ -1,0 +1,2 @@
+# This file ensures the .plan directory is tracked by git
+# while keeping plan files private (ignored by .gitignore)
