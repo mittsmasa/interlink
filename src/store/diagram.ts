@@ -82,11 +82,14 @@ export const useDiagramStore = create<DiagramState & DiagramActions>()(
     clipboard: null,
 
     // 要素操作
-    addElement: (element) =>
+    addElement: (element) => {
       set((state) => {
         state.elements.push(element);
-        get().saveSnapshot();
-      }),
+      });
+      // スナップショットは別のアクションとして実行
+      const store = get();
+      store.saveSnapshot();
+    },
 
     updateElement: (id, updates) =>
       set((state) => {
@@ -96,7 +99,7 @@ export const useDiagramStore = create<DiagramState & DiagramActions>()(
         }
       }),
 
-    removeElement: (id) =>
+    removeElement: (id) => {
       set((state) => {
         state.elements = state.elements.filter((el) => el.id !== id);
         state.connections = state.connections.filter(
@@ -105,8 +108,9 @@ export const useDiagramStore = create<DiagramState & DiagramActions>()(
         state.selectedElementIds = state.selectedElementIds.filter(
           (selectedId) => selectedId !== id,
         );
-        get().saveSnapshot();
-      }),
+      });
+      get().saveSnapshot();
+    },
 
     moveElement: (id, position) =>
       set((state) => {
@@ -117,11 +121,12 @@ export const useDiagramStore = create<DiagramState & DiagramActions>()(
       }),
 
     // 接続操作
-    addConnection: (connection) =>
+    addConnection: (connection) => {
       set((state) => {
         state.connections.push(connection);
-        get().saveSnapshot();
-      }),
+      });
+      get().saveSnapshot();
+    },
 
     updateConnection: (id, updates) =>
       set((state) => {
@@ -131,11 +136,12 @@ export const useDiagramStore = create<DiagramState & DiagramActions>()(
         }
       }),
 
-    removeConnection: (id) =>
+    removeConnection: (id) => {
       set((state) => {
         state.connections = state.connections.filter((conn) => conn.id !== id);
-        get().saveSnapshot();
-      }),
+      });
+      get().saveSnapshot();
+    },
 
     // 選択操作
     selectElement: (id) =>
@@ -311,7 +317,9 @@ export const useDiagramStore = create<DiagramState & DiagramActions>()(
         state.connections = [];
         state.selectedElementIds = [];
         state.clipboard = null;
-        get().saveSnapshot();
+        // 履歴もクリア
+        state.history = [];
+        state.historyIndex = -1;
       }),
 
     getElementById: (id) => {

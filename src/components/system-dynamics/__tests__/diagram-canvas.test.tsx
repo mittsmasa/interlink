@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 import { useDiagramStore } from "@/store/diagram";
@@ -35,16 +35,20 @@ describe("DiagramCanvas", () => {
 
     // 要素を追加
     const store = useDiagramStore.getState();
-    store.addElement({
-      id: "test-element",
-      type: "stock",
-      position: { x: 100, y: 100 },
-      size: { width: 100, height: 60 },
-      label: "テスト要素",
-      value: 0,
+    await act(async () => {
+      store.addElement({
+        id: "test-element",
+        type: "stock",
+        position: { x: 100, y: 100 },
+        size: { width: 100, height: 60 },
+        label: "テスト要素",
+        value: 0,
+      });
     });
 
-    rerender(<DiagramCanvas />);
+    await act(async () => {
+      rerender(<DiagramCanvas />);
+    });
 
     await waitFor(() => {
       expect(screen.getByText(/要素数: 1/)).toBeInTheDocument();
