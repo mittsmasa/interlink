@@ -6,21 +6,39 @@
     "dev": "next dev --turbopack",
     "build": "next build --turbopack",
     "start": "next start",
-    "lint": "biome check --write --no-errors-on-unmatched"
+    "lint": "biome check --write --no-errors-on-unmatched",
+    "test": "vitest",
+    "test:ui": "vitest --ui",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
+    "immer": "10.1.1",
+    "konva": "9.3.22",
+    "lucide-react": "0.542.0",
+    "mathjs": "14.6.0",
+    "next": "15.5.2",
     "react": "19.1.0",
     "react-dom": "19.1.0",
-    "next": "15.5.2"
+    "react-konva": "19.0.7",
+    "zustand": "5.0.8"
   },
   "devDependencies": {
-    "typescript": "^5",
+    "@biomejs/biome": "2.2.0",
+    "@playwright/test": "1.55.0",
+    "@tailwindcss/postcss": "^4",
+    "@testing-library/jest-dom": "6.8.0",
+    "@testing-library/react": "16.3.0",
+    "@testing-library/user-event": "14.6.1",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "@tailwindcss/postcss": "^4",
+    "@vitejs/plugin-react": "5.0.2",
+    "@vitest/browser": "3.2.4",
+    "jsdom": "26.1.0",
+    "lefthook": "1.9.1",
+    "playwright": "1.55.0",
     "tailwindcss": "^4",
-    "@biomejs/biome": "2.2.0",
-    "lefthook": "1.9.1"
+    "typescript": "^5",
+    "vitest": "3.2.4"
   }
 }
