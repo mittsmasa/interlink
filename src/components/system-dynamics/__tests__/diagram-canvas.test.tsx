@@ -2,13 +2,17 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 import { useDiagramStore } from "@/store/diagram";
+import { useUIStore } from "@/store/ui";
 import { DiagramCanvas } from "../diagram-canvas";
 
 describe("DiagramCanvas", () => {
   beforeEach(() => {
     // ストアをリセット
-    const store = useDiagramStore.getState();
-    store.clear();
+    const diagramStore = useDiagramStore.getState();
+    diagramStore.clear();
+
+    const uiStore = useUIStore.getState();
+    uiStore.resetToDefaults();
   });
 
   it("renders without crashing", async () => {
@@ -55,8 +59,15 @@ describe("DiagramCanvas", () => {
     });
   });
 
-  it("adds element when canvas is clicked", async () => {
+  it("adds element when canvas is clicked in add-stock mode", async () => {
     const user = userEvent.setup();
+
+    // ツールモードを設定
+    const uiStore = useUIStore.getState();
+    await act(async () => {
+      uiStore.setCurrentTool("add-stock");
+    });
+
     render(<DiagramCanvas />);
 
     // キャンバスがレンダリングされるまで待機
