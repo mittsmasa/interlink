@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Toolbar } from "@/components/system-dynamics/toolbar";
 
 export default function SystemDynamicsLayout({
   children,
@@ -13,15 +14,8 @@ export default function SystemDynamicsLayout({
             システムダイナミクス
           </h2>
         </div>
-        <nav className="p-4">
-          <div className="space-y-2">
-            <div className="text-sm font-medium text-gray-700 mb-2">ツール</div>
-            <div className="pl-2 space-y-1">
-              <div className="text-sm text-gray-600">要素追加</div>
-              <div className="text-sm text-gray-600">接続線</div>
-              <div className="text-sm text-gray-600">テキスト</div>
-            </div>
-          </div>
+        <nav className="flex-1 overflow-y-auto">
+          <Toolbar />
         </nav>
       </aside>
       <main className="flex-1 flex flex-col">
