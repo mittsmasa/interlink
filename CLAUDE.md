@@ -12,12 +12,12 @@ envchain interlink pnpm dev:preview
 
 - envchain を忘れるとページは表示されるがチャット送信だけ失敗する
 - `pnpm dev:preview` は OAuth エミュレータ付き（Google 実クレデンシャル不要）。ログインはエミュレータ画面で任意のメールを入力
-- モデル差し替えは `AI_GATEWAY_MODEL`（`<provider>/<model>` 形式、既定 `anthropic/claude-sonnet-4-6`）
+- モデル差し替えは `AI_GATEWAY_MODEL`（`<provider>/<model>` 形式、既定 `google/gemini-2.5-flash`）
 
 ### モデル選定の注意（2026-06 時点の実測）
 
-- Vercel 無料枠では既定の `anthropic/claude-sonnet-4-6` が **403**（RestrictedModelsError）になる。有料クレジット投入で解禁
-- 無料枠で使うなら `AI_GATEWAY_MODEL=google/gemini-2.5-flash`（updateDiagram ツール実行まで動作確認済み）
+- 既定の `google/gemini-2.5-flash` は無料枠で updateDiagram ツール実行まで動作確認済み
+- `anthropic/claude-sonnet-4-6` は品質最良だが Vercel 無料枠では **403**（RestrictedModelsError）。有料クレジット投入後に `AI_GATEWAY_MODEL` で切り替える
 - `google/gemini-2.5-flash-lite` は「修正します」と言いながら**ツールを呼ばない**ので使わない
 
 ## 規約（lull 踏襲）

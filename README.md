@@ -41,7 +41,7 @@ envchain --set interlink AI_GATEWAY_API_KEY
 envchain interlink pnpm dev:preview
 ```
 
-モデルは既定で `anthropic/claude-sonnet-4-6`。Vercel 無料枠では 403 になるため、`AI_GATEWAY_MODEL=google/gemini-2.5-flash` で差し替えるか有料クレジットを投入する（`gemini-2.5-flash-lite` はツールを呼ばないため不可）。
+モデルは既定で `google/gemini-2.5-flash`（無料枠で動作確認済み）。`anthropic/claude-sonnet-4-6` 等へは `AI_GATEWAY_MODEL` で差し替え可能だが Vercel 有料クレジットが必要（`gemini-2.5-flash-lite` はツールを呼ばないため不可）。
 
 ## コマンド
 
