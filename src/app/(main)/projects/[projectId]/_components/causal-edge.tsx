@@ -9,15 +9,20 @@ import {
 import type { DiagramEdge } from "@/lib/queries/diagrams";
 import { cn } from "@/lib/utils";
 import { type BulgeSign, getFloatingEdgePath } from "./floating-edge-utils";
+import { useHighlight } from "./highlight-context";
 
 export type CausalEdgeData = { edge: DiagramEdge; bulgeSign?: BulgeSign };
 
 export function CausalEdge({ id, source, target, data, selected }: EdgeProps) {
   const sourceNode = useInternalNode(source);
   const targetNode = useInternalNode(target);
+  const highlight = useHighlight();
   const { edge, bulgeSign } = data as CausalEdgeData;
 
   if (!sourceNode || !targetNode) return null;
+
+  const emphasized = highlight?.edgeIds.has(edge.id) ?? false;
+  const dimmed = highlight !== null && !highlight.edgeIds.has(edge.id);
 
   const { path, labelX, labelY } = getFloatingEdgePath(
     sourceNode,
@@ -35,15 +40,18 @@ export function CausalEdge({ id, source, target, data, selected }: EdgeProps) {
         markerEnd={`url(#causal-arrow-${isNegative ? "neg" : "pos"})`}
         style={{
           stroke: color,
-          strokeWidth: selected ? 2.4 : 1.6,
+          strokeWidth: emphasized || selected ? 2.4 : 1.6,
+          opacity: dimmed ? 0.12 : 1,
+          transition: "opacity 200ms, stroke-width 200ms",
         }}
       />
       <EdgeLabelRenderer>
         {/* 位置決めの transform と ink-in の transform が衝突しないよう分離する */}
         <div
-          className="pointer-events-none absolute"
+          className="pointer-events-none absolute transition-opacity duration-200"
           style={{
             transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+            opacity: dimmed ? 0.12 : 1,
           }}
         >
           <div

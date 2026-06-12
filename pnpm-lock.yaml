@@ -50,6 +50,9 @@ importers:
       drizzle-orm:
         specifier: 0.45.2
         version: 0.45.2(@libsql/client@0.17.3)(@opentelemetry/api@1.9.1)(kysely@0.28.17)
+      elementary-circuits-directed-graph:
+        specifier: ^1.3.1
+        version: 1.3.1
       hono:
         specifier: 4.12.23
         version: 4.12.23
@@ -96,6 +99,9 @@ importers:
       '@types/d3-force':
         specifier: 3.0.10
         version: 3.0.10
+      '@types/elementary-circuits-directed-graph':
+        specifier: ^1.3.0
+        version: 1.3.0
       '@types/node':
         specifier: 25.9.1
         version: 25.9.1
@@ -2014,6 +2020,9 @@ packages:
   '@types/deep-eql@4.0.2':
     resolution: {integrity: sha512-c9h9dVVMigMPc4bwTvC5dxqtqJZwQPePsWjPlpSOnojbor6pGqdk541lfA7AqFQr5pB1BRdq0juY9db81BwyFw==}
 
+  '@types/elementary-circuits-directed-graph@1.3.0':
+    resolution: {integrity: sha512-Rvckwp6O6bXCdyDr7NUSU0neXjrkqFaaZavej9PJPXLzRwEbUskW47M/vh4dJfxVmtv9R3USBGfA5fGah4Pwdw==}
+
   '@types/estree@1.0.9':
     resolution: {integrity: sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==}
 
@@ -2357,6 +2366,9 @@ packages:
         optional: true
       sqlite3:
         optional: true
+
+  elementary-circuits-directed-graph@1.3.1:
+    resolution: {integrity: sha512-ZEiB5qkn2adYmpXGnJKkxT8uJHlW/mxmBpmeqawEHzPxh9HkLD4/1mFYX5l0On+f6rcPIt8/EWlRU2Vo3fX6dQ==}
 
   enhanced-resolve@5.23.0:
     resolution: {integrity: sha512-yJN/BOOLxcOW2aQgeif9mSnaUB8KtvmMMp56oA1kx1CRfBKbhZm2pJ+NBY+3eOboHxix8lfjWpHE0Ei5U8RbSA==}
@@ -2739,6 +2751,9 @@ packages:
 
   std-env@4.1.0:
     resolution: {integrity: sha512-Rq7ybcX2RuC55r9oaPVEW7/xu3tj8u4GeBYHBWCychFtzMIr86A7e3PPEBPT37sHStKX3+TiX/Fr/ACmJLVlLQ==}
+
+  strongly-connected-components@1.0.1:
+    resolution: {integrity: sha512-i0TFx4wPcO0FwX+4RkLJi1MxmcTv90jNZgxMu9XRnMXMeFUY1VJlIoXpZunPUvUUqbCT1pg5PEkFqqpcaElNaA==}
 
   styled-jsx@5.1.6:
     resolution: {integrity: sha512-qSVyDTeMotdvQYoHWLNGwRFJHC+i+ZvdBRYosOFgC+Wg1vx4frN2/RG/NA7SYqqvKNLf39P2LSRA2pu6n0XYZA==}
@@ -4494,6 +4509,8 @@ snapshots:
 
   '@types/deep-eql@4.0.2': {}
 
+  '@types/elementary-circuits-directed-graph@1.3.0': {}
+
   '@types/estree@1.0.9': {}
 
   '@types/node@25.9.1':
@@ -4721,6 +4738,10 @@ snapshots:
       '@libsql/client': 0.17.3
       '@opentelemetry/api': 1.9.1
       kysely: 0.28.17
+
+  elementary-circuits-directed-graph@1.3.1:
+    dependencies:
+      strongly-connected-components: 1.0.1
 
   enhanced-resolve@5.23.0:
     dependencies:
@@ -5196,6 +5217,8 @@ snapshots:
   stackback@0.0.2: {}
 
   std-env@4.1.0: {}
+
+  strongly-connected-components@1.0.1: {}
 
   styled-jsx@5.1.6(react@19.2.6):
     dependencies:

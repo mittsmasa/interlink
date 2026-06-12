@@ -15,7 +15,10 @@ import { model } from "@/lib/ai";
 import { auth } from "@/lib/auth";
 import { saveMessages } from "@/lib/chat-store";
 import { planDiagramMutation } from "@/lib/diagram/apply-diff";
+import { matchArchetypes } from "@/lib/diagram/archetypes";
 import { diagramDiffSchema } from "@/lib/diagram/diff-schema";
+import { lintDiagram } from "@/lib/diagram/lint";
+import { detectLoops } from "@/lib/diagram/loops";
 import { applyMutationPlan } from "@/lib/diagram/mutate";
 import { loadDiagramSnapshot } from "@/lib/diagram/snapshot";
 import { buildInterviewSystemPrompt } from "@/lib/prompts/interview";
@@ -49,10 +52,17 @@ export const chatRoute = new Hono().post(
     const projectId = project.id;
 
     const diagram = await loadDiagramSnapshot(projectId);
+    // 検証結果も埋め込み、ループの確かさを問う対話をできるようにする
+    const loopResult = detectLoops(diagram.nodes, diagram.edges);
+    const verification = {
+      loopResult,
+      findings: lintDiagram(diagram.nodes, diagram.edges),
+      matches: matchArchetypes(loopResult.loops),
+    };
 
     const result = streamText({
       model,
-      system: buildInterviewSystemPrompt(diagram),
+      system: buildInterviewSystemPrompt(diagram, verification),
       messages: await convertToModelMessages(uiMessages),
       // ツール実行後にテキストで続きを話せるよう複数ステップを許可する
       stopWhen: stepCountIs(4),
