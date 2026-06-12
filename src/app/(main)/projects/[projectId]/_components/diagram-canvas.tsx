@@ -48,6 +48,12 @@ export function DiagramCanvas(props: DiagramCanvasProps) {
 function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
   const { fitView } = useReactFlow();
   const { resolvedTheme } = useTheme();
+  // resolvedTheme は SSR では不明（常に light 扱い）のため、そのまま使うと
+  // ダーク環境で hydration mismatch になる。マウント後にだけ反映する
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
   const [selected, setSelected] = useState<
     | { kind: "node"; node: DiagramNode }
     | { kind: "edge"; edge: DiagramEdge }
@@ -140,7 +146,7 @@ function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
           onEdgesChange={onEdgesChange}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
-          colorMode={resolvedTheme === "dark" ? "dark" : "light"}
+          colorMode={mounted && resolvedTheme === "dark" ? "dark" : "light"}
           fitView
           minZoom={0.25}
           maxZoom={1.75}
