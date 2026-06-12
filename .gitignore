@@ -1,0 +1,34 @@
+# dependencies
+node_modules/
+
+# next.js
+.next/
+out/
+next-env.d.ts
+
+# local databases
+local.db
+local.db-*
+.test-db/
+
+# env
+.env
+.env.*
+!.env.example
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+pnpm-debug.log*
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+
+# playwright-cli artifacts
+.playwright-cli/

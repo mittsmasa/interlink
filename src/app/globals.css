@@ -1,0 +1,136 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * デザイントークン — 「製図室 × 研究ノート」
+ * ライト: 生成りの紙にインク（藍墨）と朱（製図の赤鉛筆）
+ * ダーク: 夜の製図室。深い藍墨の紙に明るい生成りのインク
+ */
+:root {
+  --background: oklch(0.966 0.012 90);
+  --foreground: oklch(0.27 0.022 265);
+  --card: oklch(0.985 0.008 92);
+  --card-foreground: oklch(0.27 0.022 265);
+  --popover: oklch(0.985 0.008 92);
+  --popover-foreground: oklch(0.27 0.022 265);
+  --primary: oklch(0.32 0.045 265);
+  --primary-foreground: oklch(0.97 0.01 90);
+  --secondary: oklch(0.93 0.014 88);
+  --secondary-foreground: oklch(0.32 0.045 265);
+  --muted: oklch(0.935 0.012 88);
+  --muted-foreground: oklch(0.5 0.025 265);
+  --accent: oklch(0.91 0.022 80);
+  --accent-foreground: oklch(0.3 0.04 265);
+  --destructive: oklch(0.55 0.19 30);
+  --destructive-foreground: oklch(0.98 0.008 90);
+  --border: oklch(0.875 0.016 88);
+  --input: oklch(0.875 0.016 88);
+  --ring: oklch(0.55 0.09 265);
+  --radius: 0.25rem;
+
+  /* 図の意匠: インク（因果リンク +）と朱（因果リンク − / バランス） */
+  --ink: oklch(0.35 0.05 265);
+  --vermilion: oklch(0.55 0.18 33);
+  /* キャンバスの方眼 */
+  --grid-line: oklch(0.9 0.014 88);
+}
+
+.dark {
+  --background: oklch(0.235 0.02 265);
+  --foreground: oklch(0.92 0.014 88);
+  --card: oklch(0.275 0.022 265);
+  --card-foreground: oklch(0.92 0.014 88);
+  --popover: oklch(0.275 0.022 265);
+  --popover-foreground: oklch(0.92 0.014 88);
+  --primary: oklch(0.88 0.03 88);
+  --primary-foreground: oklch(0.26 0.025 265);
+  --secondary: oklch(0.31 0.025 265);
+  --secondary-foreground: oklch(0.92 0.014 88);
+  --muted: oklch(0.3 0.022 265);
+  --muted-foreground: oklch(0.68 0.02 88);
+  --accent: oklch(0.34 0.03 265);
+  --accent-foreground: oklch(0.92 0.014 88);
+  --destructive: oklch(0.62 0.17 33);
+  --destructive-foreground: oklch(0.98 0.008 90);
+  --border: oklch(0.34 0.022 265);
+  --input: oklch(0.34 0.022 265);
+  --ring: oklch(0.65 0.06 265);
+
+  --ink: oklch(0.85 0.04 265);
+  --vermilion: oklch(0.68 0.16 35);
+  --grid-line: oklch(0.29 0.02 265);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-ink: var(--ink);
+  --color-vermilion: var(--vermilion);
+  --color-grid-line: var(--grid-line);
+
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-xl: calc(var(--radius) + 6px);
+
+  --font-sans: var(--font-plex-jp), sans-serif;
+  --font-serif: var(--font-shippori), serif;
+  --font-display: var(--font-fraunces), var(--font-shippori), serif;
+}
+
+/* 対話から図が「染み出す」出現アニメーション */
+@keyframes ink-in {
+  from {
+    opacity: 0;
+    filter: blur(4px);
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: scale(1);
+  }
+}
+
+.ink-in {
+  animation: ink-in 0.7s ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ink-in {
+    animation: none;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+  h1,
+  h2,
+  h3 {
+    @apply font-serif;
+  }
+}

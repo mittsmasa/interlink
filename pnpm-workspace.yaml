@@ -1,0 +1,8 @@
+allowBuilds:
+  esbuild: set this to true or false
+  lefthook: set this to true or false
+  sharp: set this to true or false
+minimumReleaseAgeExclude:
+  - '@emulators/adapter-next@0.6.1'
+  - '@emulators/core@0.6.1'
+  - '@emulators/google@0.6.1'
