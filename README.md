@@ -29,6 +29,20 @@ pnpm dev
 - チャット機能には `AI_GATEWAY_API_KEY`（[Vercel AI Gateway](https://vercel.com/docs/ai-gateway)）が必要
 - Google ログインを実クレデンシャルなしで動かす場合は `pnpm dev:preview`（`@emulators/google` による OAuth エミュレータが有効になる）
 
+### AI_GATEWAY_API_KEY は envchain（macOS Keychain）で渡す
+
+`.env` には書かず、[envchain](https://github.com/sorah/envchain) の `interlink` namespace に保存して起動時に注入する。
+
+```sh
+# 初回のみ: Keychain へ保存
+envchain --set interlink AI_GATEWAY_API_KEY
+
+# 起動はこの形（envchain を忘れるとチャットだけ失敗する）
+envchain interlink pnpm dev:preview
+```
+
+モデルは既定で `anthropic/claude-sonnet-4-6`。Vercel 無料枠では 403 になるため、`AI_GATEWAY_MODEL=google/gemini-2.5-flash` で差し替えるか有料クレジットを投入する（`gemini-2.5-flash-lite` はツールを呼ばないため不可）。
+
 ## コマンド
 
 | コマンド | 内容 |
