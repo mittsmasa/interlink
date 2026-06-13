@@ -1,6 +1,13 @@
 import type { ArchetypeMatch } from "@/lib/diagram/archetypes";
 import type { LintFinding } from "@/lib/diagram/lint";
 import type { LoopDetectionResult } from "@/lib/diagram/loops";
+import {
+  BEHAVIOR_PATTERN_LABELS,
+  type InterviewNotes,
+  MAX_STAKEHOLDERS,
+  MAX_VARIABLE_CANDIDATES,
+} from "@/lib/interview/notes";
+import { type InterviewPhase, PHASE_LABELS } from "@/lib/interview/phase";
 
 type DiagramSnapshot = {
   nodes: { name: string; memo: string | null; unit: string | null }[];
@@ -68,7 +75,7 @@ export function buildVerificationPromptSection(
       const kind = loop.polarity === "R" ? "自己強化" : "バランス";
       const delay = loop.hasDelay ? "、遅れあり" : "";
       lines.push(
-        `- ${loop.label}（${kind}${delay}）: ${loop.nodeNames.join(" → ")} → ${loop.nodeNames[0]}`,
+        `- ${loop.label}（${kind}${delay}、id: ${loop.id}）: ${loop.nodeNames.join(" → ")} → ${loop.nodeNames[0]}`,
       );
     }
     const hiddenCount = loopResult.loops.length - shown.length;
@@ -100,28 +107,165 @@ export function buildVerificationPromptSection(
   return lines.join("\n");
 }
 
+/** 聞き取りの誘導情報。サーバ側でノートと図から決定的に導出する */
+export type InterviewGuidance = {
+  notes: InterviewNotes;
+  phase: InterviewPhase;
+  agenda: string[];
+};
+
+/** フェーズごとの誘導内容（ねらい / 代表的な問い / 移行条件） */
+const PHASE_GUIDE: Record<
+  InterviewPhase,
+  { goal: string; questions: string[]; transition: string }
+> = {
+  "time-axis": {
+    goal: "問題を出来事ではなく、時間とともに変化する挙動として掴む",
+    questions: [
+      "何に困っていますか。それはいつ頃から始まりましたか",
+      "その状態は、どんな形で変化してきましたか（増え続けている / 減り続けている / 良くなったり悪くなったり / 頭打ち / 一度良くなってまた悪化）",
+      "理想的には、どう推移してほしいですか",
+    ],
+    transition:
+      "テーマと時間挙動を updateNotes に記録できたら、関係者分析へ重心を移す",
+  },
+  stakeholders: {
+    goal: "変数の供給源になる関係者と、それぞれの関心事を広げる",
+    questions: [
+      "この問題に関わっているのは誰ですか（人・チーム・組織）",
+      "その人は何を望んでいて、何を恐れていますか",
+      "互いにぶつかっている関心はありませんか",
+    ],
+    transition:
+      "関係者と関心事が複数記録できたら、変数抽出へ重心を移す。関心の対立はループの種なので見逃さない",
+  },
+  variables: {
+    goal: "関心事を「増減を語れる変数」に変換し、候補プールを広げる。まだ図に置かない",
+    questions: [
+      "その関心事は、何が増えたり減ったりする話ですか",
+      "テーマの変数を動かしていそうなものは何ですか。逆に、テーマの変数が動かしているものは?",
+    ],
+    transition:
+      "候補が 8 個ほど揃ったら因果分析へ。候補は updateNotes の variableCandidates に貯める",
+  },
+  causality: {
+    goal: "候補から効きそうな変数を選び、因果リンクを張り、ループを閉じる。updateDiagram の本格稼働はここから",
+    questions: [
+      "他の条件が同じなら、A が増えると B はどうなりますか",
+      "その影響はすぐ現れますか。それとも遅れて現れますか",
+    ],
+    transition: "ループが 1 つ閉じたら、仮説の検証へ重心を移す",
+  },
+  hypothesis: {
+    goal: "閉じたループをユーザーの実感と突き合わせ、構造の確からしさと介入の仮説を立てる",
+    questions: [
+      "（ループを日常の言葉の物語として読み上げて）この循環、実感と合いますか",
+      "この循環のどこに手を入れると、流れが変わりそうですか",
+    ],
+    transition:
+      "主要なループが実感で確認できたら、まだ語られていない構造（別の関係者の視点など）が残っていないかを探る",
+  },
+};
+
+/** 聞き取りノートをプロンプト用テキストにする */
+export function formatNotesForPrompt(notes: InterviewNotes): string {
+  const lines: string[] = [];
+  lines.push(`- テーマ: ${notes.theme ?? "（未記録）"}`);
+  lines.push(
+    `- 時間挙動: ${
+      notes.behavior
+        ? `${BEHAVIOR_PATTERN_LABELS[notes.behavior.pattern]} — ${notes.behavior.description}`
+        : "（未記録）"
+    }`,
+  );
+  lines.push(`- 理想の挙動: ${notes.idealBehavior ?? "（未記録）"}`);
+
+  if (notes.stakeholders.length === 0) {
+    lines.push("- 関係者: （未記録）");
+  } else {
+    lines.push("- 関係者:");
+    for (const s of notes.stakeholders.slice(0, MAX_STAKEHOLDERS)) {
+      const concerns =
+        s.concerns.length > 0 ? `: ${s.concerns.join(" / ")}` : "";
+      lines.push(`  - ${s.name}${concerns}`);
+    }
+  }
+
+  if (notes.variableCandidates.length === 0) {
+    lines.push("- 変数候補: （未記録）");
+  } else {
+    lines.push("- 変数候補（図に置く前の材料）:");
+    for (const c of notes.variableCandidates.slice(
+      0,
+      MAX_VARIABLE_CANDIDATES,
+    )) {
+      lines.push(`  - ${c.name}${c.source ? `（出所: ${c.source}）` : ""}`);
+    }
+  }
+
+  lines.push(
+    `- 確認済みループ ID: ${
+      notes.confirmedLoopIds.length > 0
+        ? notes.confirmedLoopIds.join(", ")
+        : "（なし）"
+    }`,
+  );
+  return lines.join("\n");
+}
+
 /** 聞き取りチャットのシステムプロンプトを組み立てる */
 export function buildInterviewSystemPrompt(
   diagram: DiagramSnapshot,
   verification: DiagramVerification,
+  guidance: InterviewGuidance,
 ) {
+  const { notes, phase, agenda } = guidance;
+  const guide = PHASE_GUIDE[phase];
+
+  const agendaSection =
+    agenda.length > 0
+      ? `## 次に聞くこと（優先順）
+${agenda.map((item, i) => `${i + 1}. ${item}`).join("\n")}
+`
+      : "";
+
   return `あなたは「interlink」のファシリテータです。システム思考の方法論に基づき、ユーザーの構造的な悩みを対話で聞き取り、因果ループ図を一緒に育てます。
 
-## 対話の進め方
+## 方法論: 発散から集約へ
+聞き取りは 5 つのフェーズで進めます:
+1. 時間軸分析 — テーマと、その時間挙動（増減・振動・頭打ち）を掴む
+2. 関係者分析 — 関わる人と関心事を広げる
+3. 変数抽出 — 関心事を変数候補に変換して貯める
+4. 因果分析 — 変数を選び、リンクを張り、ループを閉じる
+5. 仮説の検証 — ループを実感と突き合わせ、介入の仮説を立てる
+
+- フェーズ 1〜3 は発散。updateDiagram を急がず、材料は updateNotes の variableCandidates に貯める
+- フェーズ 4 から集約。候補の中から効きそうな変数を選んで図化する
+- フェーズは対話の重心であって、関所ではない。ユーザーの話が先のフェーズに及んだら柔軟に拾ってノートに記録し、そのうえで重心に戻る
+
+## いまのフェーズ: ${PHASE_LABELS[phase]}
+- ねらい: ${guide.goal}
+- 代表的な問い: ${guide.questions.join(" / ")}
+- 移行: ${guide.transition}
+
+${agendaSection}## 対話の進め方
 - 一度に 1〜2 問だけ尋ねる。尋問にしない。相手の言葉を短く受け止めてから次の問いへ
-- 聞き取ること:
-  1. 何に困っているか（テーマ）
-  2. それは時間とともにどう変化してきたか（増えている / 減っている / 振動している / 頭打ち）。出来事ではなく挙動パターンを掴む
-  3. 何がそれを動かしていると感じるか。その根拠
-  4. これまで試した対処と、その結果や副作用
 - 「他の条件が同じなら、A が増えると B はどうなりますか?」の形で因果と相関を区別する
 
+## 聞き取りノート（updateNotes ツール）
+- 聞き取った新しい事実（テーマ / 時間挙動 / 理想 / 関係者 / 変数候補）は、そのターン内に updateNotes へ反映してから返答する
+- updateNotes は全置換。下記「現在のノート」の内容に新しい事実を加えた全体を送る。既存の内容を欠落させない
+- ユーザーがループに納得したら、そのループの id を confirmedLoopIds に加える
+
+### 現在のノート
+${formatNotesForPrompt(notes)}
+
 ## 図の操作（updateDiagram ツール）
-- 変数が 3〜4 個、リンクが 2〜3 本見えてきたら最初の図を描いて見せる。完璧を待たない。図は対話の材料
+- 因果分析フェーズに入ったら、変数候補から 3〜4 個を選んで最初の図を描いて見せる。完璧を待たない。図は対話の材料
 - ユーザーが図の修正や追加に言及したら、即座にツールで反映する
 - 必ず増分修正にする。ユーザーの合意なく既存の変数やリンクを消さない
 - ループ（円環）が閉じそうな箇所を意識し、閉じるために足りない変数を質問で探す
-- ツールが ok: false やwarnings を返したら、内容を踏まえて修正した diff を再送するか、ユーザーに確認する
+- ツールが ok: false や warnings を返したら、内容を踏まえて修正した diff を再送するか、ユーザーに確認する
 
 ## 変数とリンクの品質
 - 変数は増減を語れる名詞句。動詞や方向を含めない（×「コスト増大」→ ○「コスト」）
@@ -144,5 +288,5 @@ ${buildVerificationPromptSection(verification)}
 
 ## トーン
 - 日本語。丁寧だが堅すぎない、落ち着いた話し方
-- 図を更新したら、何をどう変えたかを一言で伝えてから次の問いへ進む`;
+- 図やノートを更新したら、何をどう変えたかを一言で伝えてから次の問いへ進む`;
 }

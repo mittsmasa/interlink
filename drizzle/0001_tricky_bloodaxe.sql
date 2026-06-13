@@ -1,0 +1,1 @@
+ALTER TABLE `projects` ADD `interview_notes` text;

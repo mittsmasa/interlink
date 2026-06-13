@@ -21,6 +21,13 @@ import { lintDiagram } from "@/lib/diagram/lint";
 import { detectLoops } from "@/lib/diagram/loops";
 import { applyMutationPlan } from "@/lib/diagram/mutate";
 import { loadDiagramSnapshot } from "@/lib/diagram/snapshot";
+import { buildInterviewAgenda } from "@/lib/interview/agenda";
+import {
+  interviewNotesSchema,
+  parseInterviewNotes,
+} from "@/lib/interview/notes";
+import { deriveInterviewPhase } from "@/lib/interview/phase";
+import { saveInterviewNotes } from "@/lib/interview/store";
 import { buildInterviewSystemPrompt } from "@/lib/prompts/interview";
 
 const bodySchema = z.object({
@@ -60,9 +67,24 @@ export const chatRoute = new Hono().post(
       matches: matchArchetypes(loopResult.loops),
     };
 
+    // 5 フェーズ聞き取りの誘導。ノート + 図から現在フェーズと
+    // 「次に聞くこと」を決定的に導出してプロンプトへ注入する
+    const notes = parseInterviewNotes(project.interviewNotes);
+    const phaseInput = {
+      nodes: diagram.nodes,
+      edges: diagram.edges,
+      loops: loopResult.loops,
+    };
+    const phase = deriveInterviewPhase(notes, phaseInput);
+    const agenda = buildInterviewAgenda(notes, phaseInput, phase);
+
     const result = streamText({
       model,
-      system: buildInterviewSystemPrompt(diagram, verification),
+      system: buildInterviewSystemPrompt(diagram, verification, {
+        notes,
+        phase,
+        agenda,
+      }),
       messages: await convertToModelMessages(uiMessages),
       // ツール実行後にテキストで続きを話せるよう複数ステップを許可する
       stopWhen: stepCountIs(4),
@@ -93,6 +115,12 @@ export const chatRoute = new Hono().post(
               },
             };
           },
+        }),
+        updateNotes: tool({
+          description:
+            "聞き取りノートを全置換で更新する。テーマ・時間挙動・理想・関係者・変数候補・確認済みループ ID を聞き取ったら、そのターン内に必ず反映する。図に置く前の変数候補はここに貯めること。現在のノートの内容に新しい事実を加えた全体を送る（既存の内容を欠落させない）",
+          inputSchema: interviewNotesSchema,
+          execute: (input) => saveInterviewNotes(projectId, input),
         }),
       },
     });

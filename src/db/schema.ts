@@ -112,6 +112,11 @@ export const projects = sqliteTable(
     status: text("status", { enum: PROJECT_STATUSES })
       .notNull()
       .default("interviewing"),
+    /**
+     * 聞き取りノート（JSON 文字列）。AI が updateNotes ツールで全置換更新する。
+     * schema と parse は src/lib/interview/notes.ts。null = 空ノート
+     */
+    interviewNotes: text("interview_notes"),
     createdAt: integer("created_at")
       .notNull()
       .$defaultFn(() => Date.now()),
