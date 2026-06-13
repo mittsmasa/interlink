@@ -16,13 +16,14 @@ export default async function HomePage() {
       <main className="mx-auto w-full max-w-4xl flex-1 px-4 py-12 sm:px-6">
         <section className="mb-12">
           <h1 className="font-display text-3xl leading-relaxed sm:text-4xl">
-            あなたの問いの構造を、
+            同じ悩みを、
             <br className="sm:hidden" />
-            図にする。
+            ぐるぐる考えていませんか。
           </h1>
           <p className="mt-3 max-w-prose text-muted-foreground text-sm leading-relaxed">
-            行き詰まった悩みには、たいてい構造があります。対話しながら因果のループを描き、
-            眺め、確かめる。そのための机がここにあります。
+            頑張っているのに良くならない悩みは、原因と結果が輪のようにつながっていることがよくあります。
+            ここでは AI と話すだけで、そのつながりが図になります。
+            全体が見えると、どこから手をつければいいかが見えてきます。
           </p>
           <form action={createProject} className="mt-6">
             <Button type="submit" size="lg">
