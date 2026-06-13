@@ -26,6 +26,9 @@ export function LoopBadges({ loops, liveNodes, onHover }: LoopBadgesProps) {
     ]),
   );
 
+  // 重心が近いループ同士はバッジを縦にずらして団子を避ける
+  const placed: { x: number; y: number }[] = [];
+
   return (
     <ViewportPortal>
       {loops.map((loop) => {
@@ -37,6 +40,10 @@ export function LoopBadges({ loops, liveNodes, onHover }: LoopBadgesProps) {
         let cy = points.reduce((sum, p) => sum + p.y, 0) / points.length;
         // 自己ループは重心がノード中心と重なるため、弧の上に逃がす
         if (loop.nodeIds.length === 1) cy -= 110;
+        while (placed.some((p) => Math.hypot(p.x - cx, p.y - cy) < 56)) {
+          cy += 36;
+        }
+        placed.push({ x: cx, y: cy });
 
         const isReinforcing = loop.polarity === "R";
         const color = isReinforcing ? "var(--vermilion)" : "var(--ink)";

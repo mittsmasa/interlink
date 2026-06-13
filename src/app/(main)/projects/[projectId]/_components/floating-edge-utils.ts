@@ -5,8 +5,8 @@ type Point = { x: number; y: number };
 /** 弧の膨らみ側。+1 = 進行方向に対して sweep=0 側、-1 = その逆 */
 export type BulgeSign = 1 | -1;
 
-/** 矢高（膨らみ）は弦長に対するこの比率 */
-const SAGITTA_RATIO = 0.3;
+/** 矢高（膨らみ）は弦長に対するこの比率。大きいほど強く曲がる */
+const SAGITTA_RATIO = 0.18;
 
 function getNodeCenter(node: InternalNode): Point {
   const { x, y } = node.internals.positionAbsolute;

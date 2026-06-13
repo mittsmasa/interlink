@@ -27,8 +27,8 @@ describe("chooseBulgeSigns", () => {
       positions,
     );
     const sign = signs.get("e1");
-    // a→b (dx=300, dy=0): apex は sign=1 で (150, 90*1)、sign=-1 で (150, -90)。
-    // c=(150,200) から遠いのは y=-90 側 = sign:-1
+    // a→b (dx=300, dy=0): apex は sign=1 で (150, 54)、sign=-1 で (150, -54)。
+    // c=(150,200) から遠いのは y=-54 側 = sign:-1
     expect(sign).toBe(-1);
   });
 
