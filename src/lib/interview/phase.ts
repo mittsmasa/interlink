@@ -2,39 +2,19 @@ import type { Loop } from "@/lib/diagram/loops";
 import type { InterviewNotes } from "./notes";
 
 /**
- * 聞き取りの 5 フェーズ（実践システム・シンキングの流れ）。
- * 時間軸分析 → ステークホルダ分析 → 変数抽出 → 因果分析 → 仮説構築。
+ * 聞き取りの 3 フェーズ（ドラフト先行）。
+ * 焦点（テーマと時間挙動を掴む）→ ドラフト（AI が変数と関係の叩き台を一枚描く）
+ * → すり合わせ（ドラフトを実感と突き合わせ、違和感を直しループを確かめる）。
  * フェーズは保存せず、ノートと図の状態から毎回導出する。
  */
-export const INTERVIEW_PHASES = [
-  "time-axis",
-  "stakeholders",
-  "variables",
-  "causality",
-  "hypothesis",
-] as const;
+export const INTERVIEW_PHASES = ["focus", "draft", "refine"] as const;
 export type InterviewPhase = (typeof INTERVIEW_PHASES)[number];
 
 export const PHASE_LABELS: Record<InterviewPhase, string> = {
-  "time-axis": "時間軸分析",
-  stakeholders: "関係者分析",
-  variables: "変数抽出",
-  causality: "因果分析",
-  hypothesis: "仮説の検証",
+  focus: "焦点",
+  draft: "ドラフト",
+  refine: "すり合わせ",
 };
-
-/**
- * フェーズ移行の閾値。実対話の手応えで調整する想定の発明値なので、
- * ここに集約して一箇所で変えられるようにする。
- */
-export const PHASE_THRESHOLDS = {
-  /** エッジがこれだけあれば集約（因果分析）に入っているとみなす */
-  edgesForCausality: 3,
-  /** 変数候補（ノート ∪ 図上ノード名）がこれだけ揃えば因果分析へ */
-  candidatesForCausality: 8,
-  /** 関係者がこれだけ出れば変数抽出へ */
-  stakeholdersForVariables: 2,
-} as const;
 
 type PhaseInput = {
   nodes: { name: string }[];
@@ -43,33 +23,25 @@ type PhaseInput = {
 };
 
 /**
- * 現在フェーズを「達成済みマイルストーンの次」方式で導出する。
- * ノートだけでなく図の状態も見るため、ノートのない既存プロジェクトも
- * 図があれば P4/P5 に着地する（対話が振り出しに戻らない）。
+ * 現在フェーズを導出する。ドラフト先行なので「描き始めたら draft、
+ * ループが閉じたら refine」というシンプルな段階で、件数閾値を持たない。
+ *
+ * 上から評価:
+ * 1. ループが 1 つでも閉じていれば refine（実感とのすり合わせへ）
+ * 2. 図に変数かリンクが 1 つでもあれば draft（既に描き始めている）
+ * 3. 図が空でも、テーマと時間挙動が掴めていれば draft（描く番）
+ * 4. それ以外は focus（まず焦点を掴む）
+ *
+ * 図の状態も見るため、ノートのない既存プロジェクトも図があれば
+ * draft/refine に着地し、対話が振り出しに戻らない。
  * フェーズは対話の重心であって硬いゲートではない。
  */
 export function deriveInterviewPhase(
   notes: InterviewNotes,
   { nodes, edges, loops }: PhaseInput,
 ): InterviewPhase {
-  if (loops.length >= 1) return "hypothesis";
-
-  const candidateNames = new Set([
-    ...notes.variableCandidates.map((c) => c.name),
-    ...nodes.map((n) => n.name),
-  ]);
-  if (
-    edges.length >= PHASE_THRESHOLDS.edgesForCausality ||
-    candidateNames.size >= PHASE_THRESHOLDS.candidatesForCausality
-  ) {
-    return "causality";
-  }
-
-  if (notes.stakeholders.length >= PHASE_THRESHOLDS.stakeholdersForVariables) {
-    return "variables";
-  }
-
-  if (notes.behavior !== null) return "stakeholders";
-
-  return "time-axis";
+  if (loops.length >= 1) return "refine";
+  if (nodes.length > 0 || edges.length > 0) return "draft";
+  if (notes.theme !== null && notes.behavior !== null) return "draft";
+  return "focus";
 }

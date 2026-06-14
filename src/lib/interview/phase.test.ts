@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Loop } from "@/lib/diagram/loops";
 import { emptyInterviewNotes, type InterviewNotes } from "./notes";
-import { deriveInterviewPhase, PHASE_THRESHOLDS } from "./phase";
+import { deriveInterviewPhase } from "./phase";
 
 const loop: Loop = {
   id: "loop:a→b",
@@ -20,72 +20,50 @@ function notesWith(partial: Partial<InterviewNotes>): InterviewNotes {
 }
 
 describe("deriveInterviewPhase", () => {
-  it("何もなければ時間軸分析（P1）", () => {
+  it("何もなければ焦点（focus）", () => {
     expect(deriveInterviewPhase(emptyInterviewNotes(), emptyDiagram)).toBe(
-      "time-axis",
+      "focus",
     );
   });
 
-  it("挙動が記録されたら関係者分析（P2）", () => {
+  it("テーマだけでは焦点のまま（時間挙動が要る）", () => {
+    const notes = notesWith({ theme: "残業が減らない" });
+    expect(deriveInterviewPhase(notes, emptyDiagram)).toBe("focus");
+  });
+
+  it("テーマと時間挙動が掴めたらドラフト（draft）", () => {
     const notes = notesWith({
+      theme: "残業が減らない",
       behavior: { pattern: "increasing", description: "増え続けている" },
     });
-    expect(deriveInterviewPhase(notes, emptyDiagram)).toBe("stakeholders");
+    expect(deriveInterviewPhase(notes, emptyDiagram)).toBe("draft");
   });
 
-  it("関係者が閾値に達したら変数抽出（P3）", () => {
-    const notes = notesWith({
-      behavior: { pattern: "increasing", description: "増え続けている" },
-      stakeholders: Array.from(
-        { length: PHASE_THRESHOLDS.stakeholdersForVariables },
-        (_, i) => ({ name: `関係者${i}`, concerns: [] }),
-      ),
-    });
-    expect(deriveInterviewPhase(notes, emptyDiagram)).toBe("variables");
+  it("ノートが空でも図に変数があればドラフト（描き始めている）", () => {
+    const diagram = { nodes: [{ name: "残業時間" }], edges: [], loops: [] };
+    expect(deriveInterviewPhase(emptyInterviewNotes(), diagram)).toBe("draft");
   });
 
-  it("変数候補が閾値に達したら因果分析（P4）", () => {
-    const notes = notesWith({
-      variableCandidates: Array.from(
-        { length: PHASE_THRESHOLDS.candidatesForCausality },
-        (_, i) => ({ name: `変数${i}`, source: null }),
-      ),
-    });
-    expect(deriveInterviewPhase(notes, emptyDiagram)).toBe("causality");
-  });
-
-  it("候補数はノートと図上ノード名を dedup して数える", () => {
-    const n = PHASE_THRESHOLDS.candidatesForCausality;
-    // ノートに n-1 個 + 図に同名 1 個 → 合計 n-1 のまま P4 に達しない
-    const notes = notesWith({
-      stakeholders: [{ name: "自分", concerns: [] }],
-      variableCandidates: Array.from({ length: n - 1 }, (_, i) => ({
-        name: `変数${i}`,
-        source: null,
-      })),
-    });
-    const diagram = { nodes: [{ name: "変数0" }], edges: [], loops: [] };
-    expect(deriveInterviewPhase(notes, diagram)).not.toBe("causality");
-    // 図に新顔 1 個 → n に達して P4
-    const diagram2 = { nodes: [{ name: "新顔" }], edges: [], loops: [] };
-    expect(deriveInterviewPhase(notes, diagram2)).toBe("causality");
-  });
-
-  it("ノートが空でもエッジが閾値以上なら因果分析（既存プロジェクト後方互換）", () => {
+  it("ノートが空でもエッジがあればドラフト（既存プロジェクト後方互換）", () => {
     const diagram = {
       nodes: [{ name: "a" }, { name: "b" }],
-      edges: Array.from({ length: PHASE_THRESHOLDS.edgesForCausality }),
+      edges: [{}],
       loops: [],
     };
-    expect(deriveInterviewPhase(emptyInterviewNotes(), diagram)).toBe(
-      "causality",
-    );
+    expect(deriveInterviewPhase(emptyInterviewNotes(), diagram)).toBe("draft");
   });
 
-  it("ループがあれば常に仮説の検証（P5）", () => {
+  it("ループが閉じたらすり合わせ（refine）", () => {
     const diagram = { nodes: [], edges: [], loops: [loop] };
-    expect(deriveInterviewPhase(emptyInterviewNotes(), diagram)).toBe(
-      "hypothesis",
-    );
+    expect(deriveInterviewPhase(emptyInterviewNotes(), diagram)).toBe("refine");
+  });
+
+  it("ループがあれば焦点未達でもすり合わせ（図優先）", () => {
+    const diagram = {
+      nodes: [{ name: "a" }],
+      edges: [{}],
+      loops: [loop],
+    };
+    expect(deriveInterviewPhase(emptyInterviewNotes(), diagram)).toBe("refine");
   });
 });
