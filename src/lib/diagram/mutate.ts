@@ -24,9 +24,22 @@ export async function applyMutationPlan(projectId: string, plan: MutationPlan) {
         .values(plan.createNodes.map((n) => ({ ...n, projectId })));
     }
     for (const node of plan.updateNodes) {
+      // 指定された列だけ更新する（undefined の列は触らない）。SFD 列は kind 指定が
+      // あったノードにのみ含まれ、memo/unit のみの更新で既存の役割を消さない
       await tx
         .update(nodes)
-        .set({ memo: node.memo, unit: node.unit })
+        .set({
+          ...(node.memo !== undefined ? { memo: node.memo } : {}),
+          ...(node.unit !== undefined ? { unit: node.unit } : {}),
+          ...(node.kind !== undefined ? { kind: node.kind } : {}),
+          ...(node.expression !== undefined
+            ? { expression: node.expression }
+            : {}),
+          ...(node.initialValue !== undefined
+            ? { initialValue: node.initialValue }
+            : {}),
+          ...(node.value !== undefined ? { value: node.value } : {}),
+        })
         .where(eq(nodes.id, node.id));
     }
     for (const edge of plan.updateEdges) {

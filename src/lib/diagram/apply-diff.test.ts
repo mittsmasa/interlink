@@ -197,3 +197,129 @@ describe("planDiagramMutation", () => {
     expect(result.plan.updateNodes).toHaveLength(1);
   });
 });
+
+describe("planDiagramMutation（SFD 化）", () => {
+  it("新規ノードに kind:stock と initialValue を付けると createNodes に載る", () => {
+    const result = planDiagramMutation(
+      emptyDiagram,
+      diff({
+        upsertNodes: [{ name: "残高", kind: "stock", initialValue: 100 }],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.createNodes[0]).toMatchObject({
+      name: "残高",
+      kind: "stock",
+      initialValue: 100,
+      expression: null,
+      value: null,
+    });
+  });
+
+  it("既存ノードへ kind だけ指定すると memo/unit 無しでも updateNodes に載る", () => {
+    const result = planDiagramMutation(
+      diagram,
+      diff({
+        upsertNodes: [{ name: "疲労", kind: "stock", initialValue: 30 }],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.updateNodes[0]).toMatchObject({
+      id: "n2",
+      kind: "stock",
+      initialValue: 30,
+      expression: null,
+      value: null,
+    });
+  });
+
+  it("flow に正しい式を渡すと expression が載る", () => {
+    const result = planDiagramMutation(
+      diagram,
+      diff({
+        upsertNodes: [{ name: "疲労", kind: "flow", expression: "残高 * 0.1" }],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.updateNodes[0]).toMatchObject({
+      id: "n2",
+      kind: "flow",
+      expression: "残高 * 0.1",
+      initialValue: null,
+      value: null,
+    });
+  });
+
+  it("flow に関数を含む不正な式を渡すと式は載らず warning になる", () => {
+    const result = planDiagramMutation(
+      diagram,
+      diff({
+        upsertNodes: [{ name: "疲労", kind: "flow", expression: "sqrt(x)" }],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.updateNodes[0]).toMatchObject({
+      kind: "flow",
+      expression: null,
+    });
+    expect(result.plan.warnings.some((w) => w.includes("式が無効"))).toBe(true);
+  });
+
+  it("kind 別に無関係な列は正規化で null 化される", () => {
+    const result = planDiagramMutation(
+      emptyDiagram,
+      diff({
+        upsertNodes: [
+          {
+            name: "残高",
+            kind: "stock",
+            expression: "a + b",
+            initialValue: 5,
+            value: 9,
+          },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.createNodes[0]).toMatchObject({
+      kind: "stock",
+      initialValue: 5,
+      expression: null,
+      value: null,
+    });
+  });
+
+  it("kind 指定なしで式だけ来たら無視し warning にする", () => {
+    const result = planDiagramMutation(
+      diagram,
+      diff({
+        upsertNodes: [{ name: "疲労", expression: "残高 * 2" }],
+      }),
+    );
+    // 有効操作が無いので拒否（式は無視され、memo/unit/kind もない）
+    expect(result.ok).toBe(false);
+  });
+
+  it("kind:null で未分類へ戻すと 3 列とも null になる", () => {
+    const result = planDiagramMutation(
+      diagram,
+      diff({
+        upsertNodes: [{ name: "疲労", kind: null }],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.updateNodes[0]).toMatchObject({
+      id: "n2",
+      kind: null,
+      expression: null,
+      initialValue: null,
+      value: null,
+    });
+  });
+});

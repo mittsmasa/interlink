@@ -10,7 +10,15 @@ import {
 import { type InterviewPhase, PHASE_LABELS } from "@/lib/interview/phase";
 
 type DiagramSnapshot = {
-  nodes: { name: string; memo: string | null; unit: string | null }[];
+  nodes: {
+    name: string;
+    memo: string | null;
+    unit: string | null;
+    kind?: "stock" | "flow" | "auxiliary" | "constant" | null;
+    expression?: string | null;
+    initialValue?: number | null;
+    value?: number | null;
+  }[];
   edges: {
     sourceName: string;
     targetName: string;
@@ -20,13 +28,31 @@ type DiagramSnapshot = {
   }[];
 };
 
+/** kind のプロンプト表示ラベル */
+const KIND_PROMPT_LABEL: Record<
+  NonNullable<DiagramSnapshot["nodes"][number]["kind"]>,
+  string
+> = {
+  stock: "ストック",
+  flow: "フロー",
+  auxiliary: "補助変数",
+  constant: "定数",
+};
+
 /** 現在の図をプロンプトに埋め込むテキストにする */
 export function formatDiagramForPrompt(diagram: DiagramSnapshot) {
   if (diagram.nodes.length === 0) {
     return "（まだ図はありません）";
   }
   const nodeLines = diagram.nodes.map((n) => {
-    const attrs = [n.memo, n.unit ? `単位: ${n.unit}` : null]
+    const sfd: string[] = [];
+    if (n.kind) sfd.push(`役割: ${KIND_PROMPT_LABEL[n.kind]}`);
+    if (n.kind === "stock" && n.initialValue != null)
+      sfd.push(`初期値: ${n.initialValue}`);
+    if ((n.kind === "flow" || n.kind === "auxiliary") && n.expression)
+      sfd.push(`式: ${n.expression}`);
+    if (n.kind === "constant" && n.value != null) sfd.push(`値: ${n.value}`);
+    const attrs = [n.memo, n.unit ? `単位: ${n.unit}` : null, ...sfd]
       .filter(Boolean)
       .join(" / ");
     return `- ${n.name}${attrs ? `（${attrs}）` : ""}`;
@@ -249,6 +275,17 @@ ${formatNotesForPrompt(notes)}
 - ユーザーが図の修正や追加に言及したら、即座にツールで反映する
 - ループが閉じていなければ、閉じるために足りない変数を推論で補うか、的を絞って質問する
 - ツールが ok: false や warnings を返したら、内容を踏まえて修正した diff を再送するか、ユーザーに確認する
+
+## ストック&フロー化（ユーザーが明示的に求めたときだけ）
+ユーザーが「ストック&フローにして」「SFD にして」「シミュレーションできるようにして」等と求めたら、updateDiagram で各変数に役割（kind）と数値的意味を付けて書き直す。通常の聞き取り（CLD づくり）では行わない。
+- 役割の見分け: stock=時間とともに溜まる/減る量（例: 残高、在庫、疲労、信頼）。flow=stock を増減させる速度（例: 入金、消費、回復）。auxiliary=途中の計算値。constant=変化しない固定パラメータ
+- 式（flow / auxiliary の expression）は四則演算（+ − × ÷）と既存の変数名のみ。関数やべき乗は使えない。変数名は図にある名前を正確に書く（日本語名で可。例: 残高 * 0.05）
+- stock には initialValue（初期値）、constant には value（固定値）を必ず付ける
+- stock を変化させる flow は、flow→stock のエッジを polarity 付きで張る（+ = 流入 / − = 流出）。rationale も書く
+- ストックは「ひとつ前の値」を保持するので、flow/auxiliary の式が stock を参照しても循環にならない。一方 flow/auxiliary 同士で輪を作ると循環エラーになるため、間に stock を挟む
+- **説明だけで終わらせない。必ず同じ応答の中で updateDiagram ツールを呼び、kind と式・初期値・定数値を実際に書き込む**。「更新します」と述べたら、その応答内で必ずツールを実行すること
+- ツールで反映したあとに、何をストック/フローにしたか、式が何を表すかを一言で説明し、画面左下のシミュレーションで動きを確認するよう促す
+- ツールが「式が無効」等の warning を返したら、式を四則演算に直して再送する
 
 ## 変数とリンクの品質
 - 変数は増減を語れる名詞句。動詞や方向を含めない（×「コスト増大」→ ○「コスト」）

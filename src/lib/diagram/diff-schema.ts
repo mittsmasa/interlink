@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { NODE_KINDS } from "@/db/schema";
 
 /**
  * AI が出力する因果ループ図の差分。
@@ -24,11 +25,34 @@ export const diagramDiffSchema = z.object({
           .string()
           .optional()
           .describe("単位（任意。例: 時間/週、人、円）。わかる場合のみ"),
+        kind: z
+          .enum(NODE_KINDS)
+          .nullable()
+          .optional()
+          .describe(
+            "ストック&フロー化の役割。stock=溜まる量 / flow=stock を変える速度 / auxiliary=途中計算 / constant=固定パラメータ。CLD のままなら指定しない（null で未分類に戻す）",
+          ),
+        expression: z
+          .string()
+          .optional()
+          .describe(
+            "flow / auxiliary の計算式。四則演算（+ - * /）と既存の変数名のみ。関数・べき乗は不可。変数名は図にある名前を正確に書く（例: 残高 * 0.05）。stock / constant では使わない",
+          ),
+        initialValue: z
+          .number()
+          .nullable()
+          .optional()
+          .describe("stock の初期値（t=0 の量）。stock のときに付ける"),
+        value: z
+          .number()
+          .nullable()
+          .optional()
+          .describe("constant の固定値。constant のときに付ける"),
       }),
     )
     .default([])
     .describe(
-      "追加または更新する変数。同名の変数があれば memo/unit を更新する",
+      "追加または更新する変数。同名の変数があれば memo/unit を更新する。ストック&フロー化のときは kind と式/初期値/定数値も指定する",
     ),
   deleteNodes: z
     .array(z.string().min(1))
