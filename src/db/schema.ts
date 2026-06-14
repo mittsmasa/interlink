@@ -168,6 +168,15 @@ export const nodes = sqliteTable(
     memo: text("memo"),
     unit: text("unit"),
     kind: text("kind", { enum: NODE_KINDS }),
+    /**
+     * 数式（mathjs 構文）。flow / auxiliary が他ノードを参照して計算する式。
+     * stock / constant では使わない。CLD 段階および未設定時は null。
+     */
+    expression: text("expression"),
+    /** stock の初期値（t=0 の量）。stock 以外・未設定時は null */
+    initialValue: real("initial_value"),
+    /** constant の固定値。constant 以外・未設定時は null */
+    value: real("value"),
     x: real("x"),
     y: real("y"),
     createdAt: integer("created_at")
