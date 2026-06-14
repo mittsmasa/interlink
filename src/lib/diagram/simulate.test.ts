@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { type SimEdge, type SimNode, simulate } from "./simulate";
+import {
+  type SimEdge,
+  type SimNode,
+  simulate,
+  validateExpressionStructure,
+} from "./simulate";
 
 const stock = (id: string, name: string, initialValue: number): SimNode => ({
   id,
@@ -236,5 +241,38 @@ describe("simulate", () => {
     expect(result.order.indexOf("ミス率")).toBeLessThan(
       result.order.indexOf("残業時間"),
     );
+  });
+});
+
+describe("validateExpressionStructure", () => {
+  it("四則演算と変数参照は OK（null）", () => {
+    expect(validateExpressionStructure("a + b*2 - c/3")).toBeNull();
+  });
+
+  it("日本語名を含む式も構文 OK", () => {
+    expect(validateExpressionStructure("疲労/100")).toBeNull();
+    expect(validateExpressionStructure("8 + ミス率*20")).toBeNull();
+  });
+
+  it("空文字は OK（null）", () => {
+    expect(validateExpressionStructure("")).toBeNull();
+    expect(validateExpressionStructure("   ")).toBeNull();
+  });
+
+  it("関数呼び出しは disallowed", () => {
+    expect(validateExpressionStructure("sqrt(x)")?.type).toBe("disallowed");
+  });
+
+  it("べき乗など四則演算以外の演算子は disallowed", () => {
+    expect(validateExpressionStructure("2 ^ 3")?.type).toBe("disallowed");
+  });
+
+  it("構文エラーは parse", () => {
+    expect(validateExpressionStructure("1 + + *")?.type).toBe("parse");
+  });
+
+  it("参照解決はしない（未定義名でも構文が通れば OK）", () => {
+    // 保存時は参照の有無を見ない。実行時に解決する方針
+    expect(validateExpressionStructure("存在しない名前 + 1")).toBeNull();
   });
 });

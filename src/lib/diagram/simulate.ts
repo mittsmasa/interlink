@@ -136,8 +136,11 @@ function findDisallowed(node: MathNode): string | null {
         }
         return;
       }
+      case "FunctionNode":
+        violation = "関数は使えません（四則演算と変数参照のみ）";
+        return;
       default:
-        violation = `${n.type} は使えません（四則演算と変数参照のみ）`;
+        violation = "使えない記法が含まれています（四則演算と変数参照のみ）";
     }
   });
   return violation;
@@ -150,6 +153,33 @@ function collectSymbols(node: MathNode): string[] {
     if (n.type === "SymbolNode") names.add((n as SymbolNode).name);
   });
   return [...names];
+}
+
+/**
+ * 式の構文と演算子だけを検証する（保存時の軽い検証用）。参照解決・循環チェックは
+ * しない。全識別子トークンをダミーに置換してから parse するので、参照名の有無や
+ * 定義順に依存せず、構文と whitelist（四則演算と参照のみ）だけを見る。
+ * 関数呼び出し `f(...)` は置換後も FunctionNode として残り disallowed になる。
+ * 空文字は OK（null を返す）。
+ */
+export function validateExpressionStructure(
+  expression: string,
+): SimError | null {
+  const expr = expression.trim();
+  if (!expr) return null;
+  const code = expr.replace(TOKEN_RE, () => "_x");
+  let root: MathNode;
+  try {
+    root = parse(code);
+  } catch (e) {
+    return {
+      type: "parse",
+      message: `式を解釈できません: ${(e as Error).message}`,
+    };
+  }
+  const disallowed = findDisallowed(root);
+  if (disallowed) return { type: "disallowed", message: disallowed };
+  return null;
 }
 
 type Compiled = {
