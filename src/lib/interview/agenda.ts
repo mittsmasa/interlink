@@ -2,10 +2,10 @@ import type { Loop } from "@/lib/diagram/loops";
 import { BEHAVIOR_PATTERN_LABELS, type InterviewNotes } from "./notes";
 import type { InterviewPhase } from "./phase";
 
-/** プロンプトに注入するアジェンダ件数の上限（トークン抑制） */
-export const MAX_AGENDA_ITEMS = 3;
+/** プロンプトに注入するアジェンダ件数の上限（トークン抑制。一括質問のため少し緩める） */
+export const MAX_AGENDA_ITEMS = 4;
 /** 端点ノード（原因・影響が未接続）の指摘件数上限 */
-const MAX_ENDPOINT_ITEMS = 2;
+const MAX_ENDPOINT_ITEMS = 3;
 
 type AgendaInput = {
   nodes: { id: string; name: string }[];
@@ -13,22 +13,72 @@ type AgendaInput = {
   loops: readonly Loop[];
 };
 
+/** 原因 or 影響が未接続の端点ノードを「次に埋める所」として並べる */
+function buildEndpointItems(
+  nodes: AgendaInput["nodes"],
+  edges: AgendaInput["edges"],
+): string[] {
+  if (edges.length === 0) return [];
+  const hasIncoming = new Set<string>();
+  const hasOutgoing = new Set<string>();
+  for (const edge of edges) {
+    if (edge.sourceNodeId === edge.targetNodeId) continue; // 自己ループは両向き扱いしない
+    hasOutgoing.add(edge.sourceNodeId);
+    hasIncoming.add(edge.targetNodeId);
+  }
+  const items: string[] = [];
+  for (const node of nodes) {
+    if (!hasIncoming.has(node.id)) {
+      items.push(
+        `変数「${node.name}」を動かしている原因がまだ図にない。推論で補えそうなら描き、怪しければ「何がこれを増やしたり減らしたりしていますか?」と確かめる`,
+      );
+    } else if (!hasOutgoing.has(node.id)) {
+      items.push(
+        `変数「${node.name}」がどこへ影響するかがまだ図にない。推論で補えそうなら描き、怪しければ「これが増えると、何が変わりますか?」と確かめる`,
+      );
+    }
+  }
+  return items.slice(0, MAX_ENDPOINT_ITEMS);
+}
+
 /**
- * 「次に聞くこと」を優先順で導出する。detectLoops の結果と degree 計算
- * だけで成立し、グラフ探索は持たない。返り値はプロンプトへそのまま
- * 並べる指示文（最大 MAX_AGENDA_ITEMS 件）。
- *
- * 優先順:
- * 1. 未確認ループ — 物語として読み上げ、実感を確かめる（納得感の核）
- * 2. 挙動と構造の不整合 — BOT で聞いた実挙動と図の構造の答え合わせ
- * 3. 端点ノード — 原因・影響が未接続の変数の深掘り
- * 4. ノートの空欄・未変数化の関係者 — 発散の穴埋め
+ * 「次にすること」を優先順で導出する。ドラフト先行なので、AI が叩き台を
+ * 描く指示と、その叩き台の「違和感ポイント（=ユーザーに一括で問う所）」を
+ * フェーズに応じて並べる。detectLoops の結果と degree 計算だけで成立し、
+ * グラフ探索は持たない。返り値はプロンプトへそのまま並べる指示文。
  */
 export function buildInterviewAgenda(
   notes: InterviewNotes,
   { nodes, edges, loops }: AgendaInput,
   phase: InterviewPhase,
 ): string[] {
+  // 焦点: まずテーマと時間挙動を一括で掴む。掴めたら次ターンで描く
+  if (phase === "focus") {
+    return [
+      "まずテーマ（何に困っているか）と、その時間挙動（いつ頃から・増え続け / 減り続け / 振動 / 頭打ち など）、理想の推移を、ひとつのメッセージでまとめて聞く。掴めたら updateNotes に記録し、次のターンでドラフト図を描く",
+    ];
+  }
+
+  // ドラフト: AI が叩き台を描く番。図の状態で指示を変える
+  if (phase === "draft") {
+    const items: string[] = [];
+    if (nodes.length === 0) {
+      items.push(
+        "焦点は掴めている。待たずに、自分の推論で変数 5〜8 個と因果リンクを一枚描き、少なくとも 1 つループを閉じにいく（updateDiagram）。推測で張ったリンクは rationale に「推測」と明記する",
+      );
+    } else {
+      items.push(
+        "まだループが閉じていない。円環を閉じるために足りない変数とリンクを推論で補い、updateDiagram でドラフトを進める",
+      );
+      items.push(...buildEndpointItems(nodes, edges));
+    }
+    items.push(
+      "描いたドラフトを見せ、「特にこの辺りは推測なので、違和感があれば教えてください」と、怪しいリンクや抜けていそうな変数を箇条書きでまとめて問う（一問一答にしない）",
+    );
+    return items.slice(0, MAX_AGENDA_ITEMS);
+  }
+
+  // すり合わせ: ドラフトを実感と突き合わせ、違和感を直す
   const items: string[] = [];
 
   // 1. 未確認ループ: ユーザーの実感でまだ確かめていないループを読み上げる
@@ -41,9 +91,8 @@ export function buildInterviewAgenda(
     );
   }
 
-  // 2. 挙動と構造の不整合（仮説検証フェーズのみ）:
-  //    構造から予想される挙動（R=増殖 / B+遅れ=振動）と実挙動を突き合わせる
-  if (phase === "hypothesis" && notes.behavior) {
+  // 2. 挙動と構造の不整合: 構造から予想される挙動（R=増殖 / B+遅れ=振動）と実挙動を突き合わせる
+  if (notes.behavior) {
     const pattern = notes.behavior.pattern;
     const hasReinforcing = loops.some((l) => l.polarity === "R");
     const hasDelayedBalancing = loops.some(
@@ -64,53 +113,8 @@ export function buildInterviewAgenda(
     }
   }
 
-  // 3. 端点ノード: 原因や影響が未接続の変数（エッジが 1 本もない図では全ノードが
-  //    端点になりノイズなので、エッジが張られ始めてから効かせる）
-  if (edges.length > 0) {
-    const hasIncoming = new Set<string>();
-    const hasOutgoing = new Set<string>();
-    for (const edge of edges) {
-      if (edge.sourceNodeId === edge.targetNodeId) continue; // 自己ループは両向き扱いしない
-      hasOutgoing.add(edge.sourceNodeId);
-      hasIncoming.add(edge.targetNodeId);
-    }
-    const endpointItems: string[] = [];
-    for (const node of nodes) {
-      if (!hasIncoming.has(node.id)) {
-        endpointItems.push(
-          `変数「${node.name}」を動かしている原因がまだ図にない。「何がこれを増やしたり減らしたりしていますか?」と尋ねる`,
-        );
-      } else if (!hasOutgoing.has(node.id)) {
-        endpointItems.push(
-          `変数「${node.name}」がどこへ影響するかがまだ図にない。「これが増えると、何が変わりますか?」と尋ねる`,
-        );
-      }
-    }
-    items.push(...endpointItems.slice(0, MAX_ENDPOINT_ITEMS));
-  }
-
-  // 4. ノートの空欄・未変数化の関係者（発散の穴埋め）
-  if (notes.theme === null || notes.behavior === null) {
-    items.push(
-      `テーマと時間挙動（いつから・どんな形で変化してきたか）がまだノートにない。聞き取って updateNotes に記録する`,
-    );
-  } else {
-    const candidateSources = new Set(
-      notes.variableCandidates.map((c) => c.source),
-    );
-    const unvaried = notes.stakeholders.find(
-      (s) => !candidateSources.has(s.name),
-    );
-    if (unvaried) {
-      const concerns =
-        unvaried.concerns.length > 0
-          ? `（関心事: ${unvaried.concerns.join(" / ")}）`
-          : "";
-      items.push(
-        `関係者「${unvaried.name}」${concerns}の関心事がまだ変数になっていない。「それは何が増えたり減ったりする話ですか?」と変数化し、updateNotes の variableCandidates に記録する`,
-      );
-    }
-  }
+  // 3. 端点ノード: 原因や影響が未接続の変数を埋める
+  items.push(...buildEndpointItems(nodes, edges));
 
   return items.slice(0, MAX_AGENDA_ITEMS);
 }
