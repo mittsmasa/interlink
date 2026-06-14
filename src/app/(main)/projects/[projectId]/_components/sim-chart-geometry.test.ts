@@ -4,6 +4,7 @@ import {
   type ChartDims,
   colorForIndex,
   computeChartGeometry,
+  nearestIndexForX,
   SERIES_PALETTE,
 } from "./sim-chart-geometry";
 
@@ -66,6 +67,16 @@ describe("computeChartGeometry", () => {
     expect(geo.xMax).toBe(0);
     expect(geo.lines[0].points).toHaveLength(1);
     expect(geo.lines[0].points[0].x).toBe(44);
+  });
+
+  it("nearestIndexForX: 端・中間・範囲外・xMax=0 を正しく扱う", () => {
+    const area = { left: 44, right: 348 };
+    expect(nearestIndexForX(44, area, 3)).toBe(0); // 左端
+    expect(nearestIndexForX(348, area, 3)).toBe(3); // 右端
+    expect(nearestIndexForX(196, area, 3)).toBe(2); // 中央 → round(1.5)=2
+    expect(nearestIndexForX(0, area, 3)).toBe(0); // 左外 → クランプ
+    expect(nearestIndexForX(9999, area, 3)).toBe(3); // 右外 → クランプ
+    expect(nearestIndexForX(200, area, 0)).toBe(0); // xMax=0
   });
 
   it("複数系列の色割り当てが名前順で決定的", () => {

@@ -109,3 +109,20 @@ export function computeChartGeometry(
 
   return { lines, area, yMin, yMax, xMax, yTicks, width, height };
 }
+
+/**
+ * プロット領域の SVG x 座標から最近傍のステップ index（0..xMax）を返す純粋関数。
+ * ホバー時にどの t を指しているか決めるのに使う。xMax<=0 は常に 0。範囲外はクランプ。
+ */
+export function nearestIndexForX(
+  x: number,
+  area: { left: number; right: number },
+  xMax: number,
+): number {
+  if (xMax <= 0) return 0;
+  const span = area.right - area.left;
+  if (span <= 0) return 0;
+  const ratio = (x - area.left) / span;
+  const idx = Math.round(ratio * xMax);
+  return Math.max(0, Math.min(xMax, idx));
+}

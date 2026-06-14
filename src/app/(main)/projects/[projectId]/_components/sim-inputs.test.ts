@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { DiagramEdge, DiagramNode } from "@/lib/queries/diagrams";
-import { canSimulate, toSimEdges, toSimNodes } from "./sim-inputs";
+import {
+  canSimulate,
+  toSimEdges,
+  toSimNodes,
+  visibleSeriesNames,
+} from "./sim-inputs";
 
 /** テスト用に DiagramNode を最小プロパティから組む */
 function node(
@@ -106,5 +111,34 @@ describe("canSimulate", () => {
     expect(
       canSimulate(toSimNodes([node({ id: "1", name: "x", kind: null })])),
     ).toBe(false);
+  });
+});
+
+describe("visibleSeriesNames", () => {
+  const simNodes = toSimNodes([
+    node({ id: "1", name: "残高", kind: "stock", initialValue: 100 }),
+    node({ id: "2", name: "利息", kind: "flow", expression: "残高 * 0.1" }),
+    node({ id: "3", name: "利率", kind: "auxiliary", expression: "0.1" }),
+    node({ id: "4", name: "元本", kind: "constant", value: 100 }),
+  ]);
+
+  it("all は全系列を元の順序で返す", () => {
+    expect(visibleSeriesNames(simNodes, "all")).toEqual([
+      "残高",
+      "利息",
+      "利率",
+      "元本",
+    ]);
+  });
+
+  it("stock は kind=stock のみ返す", () => {
+    expect(visibleSeriesNames(simNodes, "stock")).toEqual(["残高"]);
+  });
+
+  it("stock が無ければ空配列", () => {
+    const noStock = toSimNodes([
+      node({ id: "1", name: "率", kind: "flow", expression: "1" }),
+    ]);
+    expect(visibleSeriesNames(noStock, "stock")).toEqual([]);
   });
 });
