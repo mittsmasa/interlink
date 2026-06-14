@@ -34,8 +34,8 @@ describe("saveInterviewNotes", () => {
 
     const result = await saveInterviewNotes(project.id, notes);
     expect(result.ok).toBe(true);
-    // behavior 記入済み・関係者 1 名・図なし → 関係者分析
-    expect(result.phase).toBe("stakeholders");
+    // テーマと時間挙動が掴めている・図なし → 描く番（ドラフト）
+    expect(result.phase).toBe("draft");
 
     const restored = parseInterviewNotes(await loadNotesRow(project.id));
     expect(restored).toEqual(notes);
@@ -58,8 +58,8 @@ describe("saveInterviewNotes", () => {
     };
 
     const result = await saveInterviewNotes(project.id, notes);
-    // キャップ後でも閾値 8 を超えるので因果分析
-    expect(result.phase).toBe("causality");
+    // テーマ・挙動が未記録で図もない → 焦点（変数候補はフェーズに影響しない）
+    expect(result.phase).toBe("focus");
 
     const restored = parseInterviewNotes(await loadNotesRow(project.id));
     expect(restored.variableCandidates).toHaveLength(MAX_VARIABLE_CANDIDATES);

@@ -93,7 +93,7 @@ describe("buildVerificationPromptSection", () => {
 
 const emptyGuidance: InterviewGuidance = {
   notes: emptyInterviewNotes(),
-  phase: "time-axis",
+  phase: "focus",
   agenda: [],
 };
 
@@ -115,18 +115,28 @@ describe("buildInterviewSystemPrompt", () => {
       emptyVerification,
       emptyGuidance,
     );
-    expect(prompt).toContain("## 方法論: 発散から集約へ");
-    expect(prompt).toContain("## いまのフェーズ: 時間軸分析");
-    expect(prompt).toContain("updateDiagram を急がず");
+    expect(prompt).toContain("## 方法論: ドラフト先行");
+    expect(prompt).toContain("## いまのフェーズ: 焦点");
+    expect(prompt).toContain("あなたが叩き台を描き");
+  });
+
+  it("一括質問を促し、旧来の一問一答ルールは含まない", () => {
+    const prompt = buildInterviewSystemPrompt(
+      { nodes: [], edges: [] },
+      emptyVerification,
+      emptyGuidance,
+    );
+    expect(prompt).toContain("まとめて、箇条書きで一度に問う");
+    expect(prompt).not.toContain("一度に 1〜2 問だけ");
   });
 
   it("フェーズに応じた誘導が変わる", () => {
     const prompt = buildInterviewSystemPrompt(
       { nodes: [], edges: [] },
       emptyVerification,
-      { ...emptyGuidance, phase: "hypothesis" },
+      { ...emptyGuidance, phase: "refine" },
     );
-    expect(prompt).toContain("## いまのフェーズ: 仮説の検証");
+    expect(prompt).toContain("## いまのフェーズ: すり合わせ");
     expect(prompt).toContain("実感と合いますか");
   });
 
