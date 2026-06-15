@@ -26,6 +26,7 @@ import { type Highlight, HighlightContext } from "./highlight-context";
 import { InspectorPanel } from "./inspector-panel";
 import { computePositions } from "./layout-diagram";
 import { LoopBadges } from "./loop-badges";
+import { SimulationPanel } from "./simulation-panel";
 import { VariableNode } from "./variable-node";
 import { VerificationPanel } from "./verification-panel";
 
@@ -194,6 +195,8 @@ function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
           onSelectFinding={selectFinding}
         />
       )}
+
+      {diagram.nodes.length > 0 && <SimulationPanel diagram={diagram} />}
 
       {diagram.nodes.length === 0 && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
