@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import type { Polarity } from "@/db/schema";
+import type { NodeKind, Polarity } from "@/db/schema";
 import type { Diagram, DiagramEdge, DiagramNode } from "@/lib/queries/diagrams";
 import { cn } from "@/lib/utils";
 import { deleteEdge, deleteNode, updateEdge, updateNode } from "../_actions";
@@ -61,6 +61,14 @@ export function InspectorPanel({
   );
 }
 
+const KIND_OPTIONS: { value: NodeKind | null; label: string }[] = [
+  { value: null, label: "未分類" },
+  { value: "stock", label: "ストック" },
+  { value: "flow", label: "フロー" },
+  { value: "auxiliary", label: "補助変数" },
+  { value: "constant", label: "定数" },
+];
+
 function NodeForm({
   projectId,
   node,
@@ -71,13 +79,27 @@ function NodeForm({
   onClose: () => void;
 }) {
   const [name, setName] = useState(node.name);
+  const [kind, setKind] = useState<NodeKind | null>(node.kind);
+  const [expression, setExpression] = useState(node.expression ?? "");
+  const [initialValue, setInitialValue] = useState(
+    node.initialValue?.toString() ?? "",
+  );
+  const [value, setValue] = useState(node.value?.toString() ?? "");
   const [memo, setMemo] = useState(node.memo ?? "");
   const [unit, setUnit] = useState(node.unit ?? "");
   const [isPending, startTransition] = useTransition();
 
   const save = () => {
     startTransition(async () => {
-      const result = await updateNode(projectId, node.id, { name, memo, unit });
+      const result = await updateNode(projectId, node.id, {
+        name,
+        memo,
+        unit,
+        kind,
+        expression,
+        initialValue: initialValue.trim() === "" ? null : Number(initialValue),
+        value: value.trim() === "" ? null : Number(value),
+      });
       if (result.ok) {
         toast.success("変数を更新しました");
       } else {
@@ -111,6 +133,57 @@ function NodeForm({
         />
       </div>
       <div className="space-y-1.5">
+        <Label>役割</Label>
+        <div className="flex flex-wrap gap-1.5">
+          {KIND_OPTIONS.map((opt) => (
+            <KindButton
+              key={opt.label}
+              label={opt.label}
+              active={kind === opt.value}
+              onClick={() => setKind(opt.value)}
+            />
+          ))}
+        </div>
+      </div>
+      {kind === "stock" && (
+        <div className="space-y-1.5">
+          <Label htmlFor="node-initial">初期値</Label>
+          <Input
+            id="node-initial"
+            type="number"
+            value={initialValue}
+            onChange={(e) => setInitialValue(e.target.value)}
+            placeholder="例: 30"
+          />
+        </div>
+      )}
+      {(kind === "flow" || kind === "auxiliary") && (
+        <div className="space-y-1.5">
+          <Label htmlFor="node-expr">式</Label>
+          <Input
+            id="node-expr"
+            value={expression}
+            onChange={(e) => setExpression(e.target.value)}
+            placeholder="例: 疲労/100"
+          />
+          <p className="text-[11px] text-muted-foreground">
+            他の変数名と + − * / で書く
+          </p>
+        </div>
+      )}
+      {kind === "constant" && (
+        <div className="space-y-1.5">
+          <Label htmlFor="node-value">定数値</Label>
+          <Input
+            id="node-value"
+            type="number"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder="例: 0.1"
+          />
+        </div>
+      )}
+      <div className="space-y-1.5">
         <Label htmlFor="node-memo">メモ</Label>
         <Textarea
           id="node-memo"
@@ -131,6 +204,31 @@ function NodeForm({
       </div>
       <FormFooter isPending={isPending} onSave={save} onDelete={remove} />
     </div>
+  );
+}
+
+function KindButton({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "rounded-md border px-2 py-1 font-serif text-xs transition-colors",
+        active
+          ? "border-ink bg-ink/10 text-ink"
+          : "text-muted-foreground hover:bg-accent",
+      )}
+    >
+      {label}
+    </button>
   );
 }
 

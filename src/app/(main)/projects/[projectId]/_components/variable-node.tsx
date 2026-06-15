@@ -7,8 +7,17 @@ import { useHighlight } from "./highlight-context";
 
 export type VariableNodeData = { node: DiagramNode };
 
+/** kind バッジの表示ラベル。未分類（null）は出さない */
+const KIND_LABELS: Record<NonNullable<DiagramNode["kind"]>, string> = {
+  stock: "ストック",
+  flow: "フロー",
+  auxiliary: "補助変数",
+  constant: "定数",
+};
+
 export function VariableNode({ data, selected }: NodeProps) {
   const { node } = data as VariableNodeData;
+  const kindLabel = node.kind ? KIND_LABELS[node.kind] : null;
   const highlight = useHighlight();
   const emphasized = highlight?.nodeIds.has(node.id) ?? false;
   const dimmed = highlight !== null && !highlight.nodeIds.has(node.id);
@@ -30,6 +39,11 @@ export function VariableNode({ data, selected }: NodeProps) {
           className="!opacity-0 !pointer-events-none"
         />
         <div className="max-w-40 text-center">
+          {kindLabel && (
+            <span className="mb-0.5 block text-[9px] tracking-wide text-muted-foreground">
+              {kindLabel}
+            </span>
+          )}
           <span className="font-serif text-sm leading-snug">{node.name}</span>
           {node.unit && (
             <span className="mt-0.5 block text-[10px] text-muted-foreground">
