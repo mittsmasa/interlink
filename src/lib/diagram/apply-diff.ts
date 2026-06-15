@@ -1,4 +1,6 @@
+import type { NodeKind } from "@/db/schema";
 import type { DiagramDiff } from "./diff-schema";
+import { validateExpressionStructure } from "./simulate";
 
 type CurrentNode = { id: string; name: string };
 type CurrentEdge = { id: string; sourceNodeId: string; targetNodeId: string };
@@ -8,14 +10,27 @@ export type CurrentDiagram = {
   edges: CurrentEdge[];
 };
 
+/** kind 別に正規化済みの SFD 列。kind 指定があったノードにのみ付く */
+type SfdColumns = {
+  kind: NodeKind | null;
+  expression: string | null;
+  initialValue: number | null;
+  value: number | null;
+};
+
+type NodeFields = {
+  memo?: string;
+  unit?: string;
+} & Partial<SfdColumns>;
+
 /**
  * diff を DB 操作の計画に変換した結果。
  * createEdges のノード参照は名前のまま（新規ノードの ID が insert 時まで
  * 確定しないため）。適用側が createNodes の insert 後に名前 → ID を解決する。
  */
 export type MutationPlan = {
-  createNodes: { name: string; memo?: string; unit?: string }[];
-  updateNodes: { id: string; memo?: string; unit?: string }[];
+  createNodes: ({ name: string } & NodeFields)[];
+  updateNodes: ({ id: string } & NodeFields)[];
   deleteNodeIds: string[];
   createEdges: {
     sourceName: string;
@@ -42,6 +57,85 @@ export type PlanResult =
 /** 表記ゆれを吸収する名前の正規化（照合キー用。保存する名前は原文のまま） */
 export function normalizeName(name: string) {
   return name.trim().normalize("NFKC").toLowerCase();
+}
+
+/**
+ * diff のノードから永続化する SFD 列を kind 別に正規化する。
+ * `updateNode`（_actions）と同じ規律: kind に応じて関連列のみ残し、無関係列は null 化。
+ * - kind 未指定（undefined）: SFD 変更なし（columns は null）。式/初期値だけ来ても無視し warning
+ * - kind=null: 未分類へ戻す（3 列とも null）
+ * - stock: initialValue のみ / constant: value のみ
+ * - flow / auxiliary: expression のみ（validateExpressionStructure で検証。不正なら式 null + warning）
+ */
+function normalizeSfdFields(node: DiagramDiff["upsertNodes"][number]): {
+  columns: SfdColumns | null;
+  warnings: string[];
+} {
+  const warnings: string[] = [];
+
+  if (node.kind === undefined) {
+    if (
+      node.expression !== undefined ||
+      node.initialValue !== undefined ||
+      node.value !== undefined
+    ) {
+      warnings.push(
+        `変数「${node.name}」に役割（kind）の指定がないため、式/初期値/定数値は無視しました`,
+      );
+    }
+    return { columns: null, warnings };
+  }
+
+  const kind = node.kind;
+  if (kind === null) {
+    return {
+      columns: {
+        kind: null,
+        expression: null,
+        initialValue: null,
+        value: null,
+      },
+      warnings,
+    };
+  }
+  if (kind === "stock") {
+    return {
+      columns: {
+        kind,
+        expression: null,
+        initialValue: node.initialValue ?? null,
+        value: null,
+      },
+      warnings,
+    };
+  }
+  if (kind === "constant") {
+    return {
+      columns: {
+        kind,
+        expression: null,
+        initialValue: null,
+        value: node.value ?? null,
+      },
+      warnings,
+    };
+  }
+
+  // flow / auxiliary
+  let expression = node.expression?.trim() ? node.expression.trim() : null;
+  if (expression) {
+    const err = validateExpressionStructure(expression);
+    if (err) {
+      warnings.push(
+        `「${node.name}」の式が無効なため保存しませんでした: ${err.message}`,
+      );
+      expression = null;
+    }
+  }
+  return {
+    columns: { kind, expression, initialValue: null, value: null },
+    warnings,
+  };
 }
 
 /**
@@ -75,13 +169,27 @@ export function planDiagramMutation(
     }
     seenUpsertKeys.add(key);
 
+    const { columns: sfd, warnings: sfdWarnings } = normalizeSfdFields(node);
+    warnings.push(...sfdWarnings);
+
     const existing = nodesByKey.get(key);
     if (existing) {
-      if (node.memo !== undefined || node.unit !== undefined) {
-        updateNodes.push({ id: existing.id, memo: node.memo, unit: node.unit });
+      const hasMeta = node.memo !== undefined || node.unit !== undefined;
+      if (hasMeta || sfd) {
+        updateNodes.push({
+          id: existing.id,
+          memo: node.memo,
+          unit: node.unit,
+          ...(sfd ?? {}),
+        });
       }
     } else {
-      createNodes.push(node);
+      createNodes.push({
+        name: node.name,
+        memo: node.memo,
+        unit: node.unit,
+        ...(sfd ?? {}),
+      });
     }
   }
 
