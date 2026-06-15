@@ -84,7 +84,7 @@ const ALLOWED_OPERATOR_FNS = new Set([
  * 参照可能なノード名か。先頭は文字/_/$、以降は文字/数字/_/$。
  * \p{L} は CJK 統合漢字（疲労 など）も含むので日本語名も通る。
  */
-const IDENTIFIER_RE = /^[\p{L}_$][\p{L}\p{N}_$]*$/u;
+export const IDENTIFIER_RE = /^[\p{L}_$][\p{L}\p{N}_$]*$/u;
 
 /**
  * 式中の識別子トークンを拾う正規表現。直前が数字/小数点でない位置から始まる
@@ -99,7 +99,7 @@ const TOKEN_RE = /(?<![\d.])[\p{L}_$][\p{L}\p{N}_$]*/gu;
  * 既知の名前に一致しない識別子トークンは unknown として集める（未定義参照）。
  * 数値リテラルは TOKEN_RE が拾わないため対象外。
  */
-function substituteNames(
+export function substituteNames(
   expr: string,
   nameToPlaceholder: Map<string, string>,
 ): { code: string; unknown: string[] } {

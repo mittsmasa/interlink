@@ -124,4 +124,72 @@ describe("detectLoops", () => {
     expect(result.truncated).toBe(true);
     expect(result.loops).toHaveLength(MAX_LOOPS);
   });
+
+  describe("式由来（derived）リンクの取り込み", () => {
+    // 式由来エッジ（極性 null もありうる・derived フラグ付き）
+    const dep = (
+      id: string,
+      sourceNodeId: string,
+      targetNodeId: string,
+      polarity: "+" | "-" | null,
+    ) => ({
+      id,
+      sourceNodeId,
+      targetNodeId,
+      polarity,
+      hasDelay: false,
+      derived: true,
+    });
+
+    it("因果エッジ + 式由来エッジで閉じたループを暫定（derived）として拾う", () => {
+      // 利息→残高（因果 +）+ 残高→利息（式由来 +）で R ループ
+      const result = detectLoops(
+        [node("balance", "残高"), node("interest", "利息")],
+        [
+          edge("e1", "interest", "balance", "+"),
+          dep("dep:balance->interest", "balance", "interest", "+"),
+        ],
+      );
+      expect(result.loops).toHaveLength(1);
+      const loop = result.loops[0];
+      expect(loop.polarity).toBe("R");
+      expect(loop.derived).toBe(true);
+      expect(loop.edgeIds).toContain("dep:balance->interest");
+    });
+
+    it("因果エッジのみのループは derived=false", () => {
+      const result = detectLoops(
+        [node("a"), node("b")],
+        [edge("e1", "a", "b", "+"), edge("e2", "b", "a", "+")],
+      );
+      expect(result.loops[0].derived).toBe(false);
+    });
+
+    it("式由来エッジの極性が null ならループ極性は '?'", () => {
+      const result = detectLoops(
+        [node("a"), node("b")],
+        [edge("e1", "a", "b", "+"), dep("dep:b->a", "b", "a", null)],
+      );
+      expect(result.loops).toHaveLength(1);
+      expect(result.loops[0].polarity).toBe("?");
+      expect(result.loops[0].derived).toBe(true);
+    });
+
+    it("'?' ループにも極性ごとの連番が振られる", () => {
+      // a⇄b（R, 因果のみ）と c⇄d（?, null を含む式由来）
+      const result = detectLoops(
+        [node("a"), node("b"), node("c"), node("d")],
+        [
+          edge("e1", "a", "b", "+"),
+          edge("e2", "b", "a", "+"),
+          edge("e3", "c", "d", "+"),
+          dep("dep:d->c", "d", "c", null),
+        ],
+      );
+      const byLabel = Object.fromEntries(
+        result.loops.map((l) => [l.label, l.polarity]),
+      );
+      expect(byLabel).toEqual({ R1: "R", "?1": "?" });
+    });
+  });
 });

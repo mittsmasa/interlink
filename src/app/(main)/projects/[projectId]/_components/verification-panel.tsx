@@ -1,17 +1,12 @@
 "use client";
 
-import {
-  ArrowClockwiseIcon,
-  ArrowCounterClockwiseIcon,
-  CaretDownIcon,
-  CompassIcon,
-  WarningIcon,
-} from "@phosphor-icons/react";
+import { CaretDownIcon, CompassIcon, WarningIcon } from "@phosphor-icons/react";
 import { useState } from "react";
 import type { ArchetypeMatch } from "@/lib/diagram/archetypes";
 import type { LintFinding } from "@/lib/diagram/lint";
 import type { Loop, LoopDetectionResult } from "@/lib/diagram/loops";
 import { cn } from "@/lib/utils";
+import { LoopPolarityIcon, loopColor } from "./loop-badges";
 
 type VerificationPanelProps = {
   loopResult: LoopDetectionResult;
@@ -101,6 +96,11 @@ export function VerificationPanel({
                     </li>
                   ))}
                 </ul>
+                {loops.some((l) => l.derived) && (
+                  <p className="mt-2 text-muted-foreground text-xs leading-relaxed">
+                    破線枠は式から推定した暫定ループです。因果リンクを引くと確定します。
+                  </p>
+                )}
               </>
             )}
           </section>
@@ -113,7 +113,9 @@ export function VerificationPanel({
               <ul className="space-y-1">
                 {findings.map((finding) => (
                   <li
-                    key={`${finding.rule}:${finding.nodeIds?.[0] ?? finding.edgeIds?.[0]}`}
+                    // 同一 rule + 同一ノードの指摘が複数出ることがある（例: 1 つの式が
+                    // 複数ノードに依存する missing-dependency-link）。message まで含めて一意化する
+                    key={`${finding.rule}:${finding.nodeIds?.[0] ?? finding.edgeIds?.[0]}:${finding.message}`}
                   >
                     <button
                       type="button"
@@ -163,19 +165,23 @@ export function VerificationPanel({
 }
 
 function LoopChip({ loop }: { loop: Loop }) {
-  const isReinforcing = loop.polarity === "R";
-  const color = isReinforcing ? "var(--vermilion)" : "var(--ink)";
+  const color = loopColor(loop.polarity);
+  const kindLabel =
+    loop.polarity === "R"
+      ? "自己強化ループ"
+      : loop.polarity === "B"
+        ? "バランスループ"
+        : "極性は不定です";
   return (
     <span
-      className="flex shrink-0 items-center gap-0.5 rounded-full border px-1.5 py-0.5 font-serif text-xs"
-      style={{ color, borderColor: color }}
-      title={isReinforcing ? "自己強化ループ" : "バランスループ"}
-    >
-      {isReinforcing ? (
-        <ArrowClockwiseIcon className="size-3" />
-      ) : (
-        <ArrowCounterClockwiseIcon className="size-3" />
+      className={cn(
+        "flex shrink-0 items-center gap-0.5 rounded-full border px-1.5 py-0.5 font-serif text-xs",
+        loop.derived && "border-dashed",
       )}
+      style={{ color, borderColor: color }}
+      title={loop.derived ? `${kindLabel}（式から推定・暫定）` : kindLabel}
+    >
+      <LoopPolarityIcon polarity={loop.polarity} className="size-3" />
       {loop.label}
       {loop.hasDelay && <span title="遅れを含む">∥</span>}
     </span>
