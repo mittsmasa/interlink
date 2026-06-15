@@ -43,3 +43,18 @@ export function toSimEdges(edges: DiagramEdge[]): SimEdge[] {
 export function canSimulate(simNodes: SimNode[]): boolean {
   return simNodes.some((node) => node.kind === "stock");
 }
+
+export type SeriesMode = "all" | "stock";
+
+/**
+ * グラフに描く系列（ノード名）を表示モードで絞る。色は名前順 index で決まるため
+ * 元の並び順を保つ。"stock" は kind==="stock" のみ、"all" は全 SimNode。
+ */
+export function visibleSeriesNames(
+  simNodes: SimNode[],
+  mode: SeriesMode,
+): string[] {
+  return simNodes
+    .filter((node) => mode === "all" || node.kind === "stock")
+    .map((node) => node.name);
+}
