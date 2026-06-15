@@ -16,11 +16,14 @@ import "@xyflow/react/dist/style.css";
 import { useTheme } from "next-themes";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { matchArchetypes } from "@/lib/diagram/archetypes";
+import { isCausallyLinked } from "@/lib/diagram/dependencies";
+import { deriveSignedDependencies } from "@/lib/diagram/dependency-polarity";
 import { type LintFinding, lintDiagram } from "@/lib/diagram/lint";
 import { detectLoops, type Loop } from "@/lib/diagram/loops";
 import type { Diagram, DiagramEdge, DiagramNode } from "@/lib/queries/diagrams";
 import { updateNodePosition } from "../_actions";
 import { CausalEdge, CausalEdgeMarkers } from "./causal-edge";
+import { DependencyEdge, DependencyEdgeMarkers } from "./dependency-edge";
 import { chooseBulgeSigns } from "./floating-edge-utils";
 import { type Highlight, HighlightContext } from "./highlight-context";
 import { InspectorPanel } from "./inspector-panel";
@@ -31,7 +34,7 @@ import { VariableNode } from "./variable-node";
 import { VerificationPanel } from "./verification-panel";
 
 const nodeTypes = { variable: VariableNode };
-const edgeTypes = { causal: CausalEdge };
+const edgeTypes = { causal: CausalEdge, dependency: DependencyEdge };
 
 type DiagramCanvasProps = {
   projectId: string;
@@ -61,15 +64,37 @@ function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
     | null
   >(null);
 
-  // ループ・lint・原型は図から毎回導出する（保存しない）
+  // 式の依存（情報リンク）のうち、同方向の因果エッジが無いもの。破線描画とループ参加の
+  // 両方でこの同一集合を使い「破線 ⟺ ループ参加リンク」を一致させる（保存せず毎回導出）
+  const signedDeps = useMemo(
+    () =>
+      deriveSignedDependencies(diagram.nodes).filter(
+        (dep) => !isCausallyLinked(dep.fromNodeId, dep.toNodeId, diagram.edges),
+      ),
+    [diagram],
+  );
+
+  // ループ・lint・原型は図から毎回導出する（保存しない）。ループ検出には因果エッジに加えて
+  // 式由来リンクも derived エッジとして渡し、式で閉じる円環を暫定ループとして拾う
   const verification = useMemo(() => {
-    const loopResult = detectLoops(diagram.nodes, diagram.edges);
+    const loopEdges = [
+      ...diagram.edges,
+      ...signedDeps.map((dep) => ({
+        id: dep.id,
+        sourceNodeId: dep.fromNodeId,
+        targetNodeId: dep.toNodeId,
+        polarity: dep.polarity,
+        hasDelay: false,
+        derived: true,
+      })),
+    ];
+    const loopResult = detectLoops(diagram.nodes, loopEdges);
     return {
       loopResult,
       findings: lintDiagram(diagram.nodes, diagram.edges),
       matches: matchArchetypes(loopResult.loops),
     };
-  }, [diagram]);
+  }, [diagram, signedDeps]);
 
   const [highlight, setHighlight] = useState<Highlight>(null);
   const highlightLoop = useCallback((loop: Loop | null) => {
@@ -96,6 +121,27 @@ function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
   const { rfNodes, rfEdges } = useMemo(() => {
     const positions = computePositions(diagram);
     const bulgeSigns = chooseBulgeSigns(diagram.edges, positions);
+    const causalEdges = diagram.edges.map(
+      (edge): Edge => ({
+        id: edge.id,
+        type: "causal",
+        source: edge.sourceNodeId,
+        target: edge.targetNodeId,
+        data: { edge, bulgeSign: bulgeSigns.get(edge.id) ?? 1 },
+      }),
+    );
+    // 式の依存を情報リンク（破線）として描く。signedDeps は既に同方向の因果エッジが無いものに
+    // 絞り込み済み（実線優先で破線は重ねない）。描画自体は極性を使わない
+    const dependencyEdges = signedDeps.map(
+      (dep): Edge => ({
+        id: dep.id,
+        type: "dependency",
+        source: dep.fromNodeId,
+        target: dep.toNodeId,
+        selectable: false,
+        focusable: false,
+      }),
+    );
     return {
       rfNodes: diagram.nodes.map(
         (node): Node => ({
@@ -105,17 +151,9 @@ function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
           data: { node },
         }),
       ),
-      rfEdges: diagram.edges.map(
-        (edge): Edge => ({
-          id: edge.id,
-          type: "causal",
-          source: edge.sourceNodeId,
-          target: edge.targetNodeId,
-          data: { edge, bulgeSign: bulgeSigns.get(edge.id) ?? 1 },
-        }),
-      ),
+      rfEdges: [...causalEdges, ...dependencyEdges],
     };
-  }, [diagram]);
+  }, [diagram, signedDeps]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(rfNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(rfEdges);
@@ -185,6 +223,7 @@ function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
         </ReactFlow>
       </HighlightContext.Provider>
       <CausalEdgeMarkers />
+      <DependencyEdgeMarkers />
 
       {diagram.nodes.length > 0 && (
         <VerificationPanel

@@ -3,9 +3,32 @@
 import {
   ArrowClockwiseIcon,
   ArrowCounterClockwiseIcon,
+  CircleDashedIcon,
 } from "@phosphor-icons/react";
 import { type Node, ViewportPortal } from "@xyflow/react";
-import type { Loop } from "@/lib/diagram/loops";
+import type { Loop, LoopPolarity } from "@/lib/diagram/loops";
+import { cn } from "@/lib/utils";
+
+/** ループ極性ごとの色。"?" は不定として中立色 */
+export function loopColor(polarity: LoopPolarity): string {
+  if (polarity === "R") return "var(--vermilion)";
+  if (polarity === "B") return "var(--ink)";
+  return "var(--muted-foreground)";
+}
+
+/** ループ極性ごとのアイコン（R=時計回り / B=反時計回り / ?=不定） */
+export function LoopPolarityIcon({
+  polarity,
+  className,
+}: {
+  polarity: LoopPolarity;
+  className?: string;
+}) {
+  if (polarity === "R") return <ArrowClockwiseIcon className={className} />;
+  if (polarity === "B")
+    return <ArrowCounterClockwiseIcon className={className} />;
+  return <CircleDashedIcon className={className} />;
+}
 
 type LoopBadgesProps = {
   loops: Loop[];
@@ -45,8 +68,8 @@ export function LoopBadges({ loops, liveNodes, onHover }: LoopBadgesProps) {
         }
         placed.push({ x: cx, y: cy });
 
-        const isReinforcing = loop.polarity === "R";
-        const color = isReinforcing ? "var(--vermilion)" : "var(--ink)";
+        const color = loopColor(loop.polarity);
+        const path = `${loop.nodeNames.join(" → ")} → ${loop.nodeNames[0]}`;
         return (
           <div
             key={loop.id}
@@ -55,19 +78,23 @@ export function LoopBadges({ loops, liveNodes, onHover }: LoopBadgesProps) {
           >
             <button
               type="button"
-              className="ink-in flex cursor-default items-center gap-1 rounded-full border bg-card/90 px-2 py-0.5 font-serif text-xs shadow-sm backdrop-blur-sm"
+              className={cn(
+                "ink-in flex cursor-default items-center gap-1 rounded-full border bg-card/90 px-2 py-0.5 font-serif text-xs shadow-sm backdrop-blur-sm",
+                // 式由来の暫定ループは破線枠で「まだ確定していない」ことを示す
+                loop.derived && "border-dashed",
+              )}
               style={{ color, borderColor: color }}
-              title={`${loop.nodeNames.join(" → ")} → ${loop.nodeNames[0]}`}
+              title={
+                loop.derived
+                  ? `${path}（式から推定。因果リンクを引くと確定します）`
+                  : path
+              }
               onMouseEnter={() => onHover(loop)}
               onMouseLeave={() => onHover(null)}
               onFocus={() => onHover(loop)}
               onBlur={() => onHover(null)}
             >
-              {isReinforcing ? (
-                <ArrowClockwiseIcon className="size-3" />
-              ) : (
-                <ArrowCounterClockwiseIcon className="size-3" />
-              )}
+              <LoopPolarityIcon polarity={loop.polarity} className="size-3" />
               <span>{loop.label}</span>
               {loop.hasDelay && (
                 <span className="tracking-tighter" title="遅れを含む">

@@ -1,6 +1,12 @@
+import { deriveDependencies, isCausallyLinked } from "./dependencies";
+
 export type LintSeverity = "warning" | "info";
 
-export type LintRule = "direction-in-name" | "verb-name" | "isolated-node";
+export type LintRule =
+  | "direction-in-name"
+  | "verb-name"
+  | "isolated-node"
+  | "missing-dependency-link";
 
 export type LintFinding = {
   rule: LintRule;
@@ -10,7 +16,12 @@ export type LintFinding = {
   edgeIds?: string[];
 };
 
-type LintNode = { id: string; name: string };
+type LintNode = {
+  id: string;
+  name: string;
+  kind?: string | null;
+  expression?: string | null;
+};
 type LintEdge = { id: string; sourceNodeId: string; targetNodeId: string };
 
 /**
@@ -84,6 +95,22 @@ export function lintDiagram(
         nodeIds: [node.id],
       });
     }
+  }
+
+  // 式が他ノードを参照しているのに、図にそのリンク（因果エッジ）が無い依存を気づかせる。
+  // 依存の真実は式にあるため（simulate と同様）、式から導出して既存エッジと突き合わせる。
+  // 同方向の因果エッジが既にあるものは「図に現れている」ので出さない。
+  const nameById = new Map(nodes.map((n) => [n.id, n.name]));
+  for (const dep of deriveDependencies(nodes)) {
+    if (isCausallyLinked(dep.fromNodeId, dep.toNodeId, edges)) continue;
+    const fromName = nameById.get(dep.fromNodeId) ?? "";
+    const toName = nameById.get(dep.toNodeId) ?? "";
+    infos.push({
+      rule: "missing-dependency-link",
+      severity: "info",
+      message: `「${toName}」は式で「${fromName}」に依存していますが、図にリンクがありません`,
+      nodeIds: [dep.toNodeId],
+    });
   }
 
   return [...warnings, ...infos];

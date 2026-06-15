@@ -78,4 +78,59 @@ describe("lintDiagram", () => {
     );
     expect(findings.map((f) => f.severity)).toEqual(["warning", "info"]);
   });
+
+  describe("missing-dependency-link", () => {
+    it("式で参照しているのに因果エッジが無いと info を出す", () => {
+      const findings = lintDiagram(
+        [
+          { id: "balance", name: "残高", kind: "stock" },
+          {
+            id: "interest",
+            name: "利息",
+            kind: "flow",
+            expression: "残高 * 利率",
+          },
+          { id: "rate", name: "利率", kind: "constant" },
+        ],
+        // 利息→残高（流入）はあるが、残高→利息・利率→利息 の依存リンクは図に無い
+        [edge("e1", "interest", "balance")],
+      );
+      const missing = findings.filter(
+        (f) => f.rule === "missing-dependency-link",
+      );
+      expect(missing).toHaveLength(2);
+      expect(missing.every((f) => f.severity === "info")).toBe(true);
+      // nodeIds は式を持つノード（利息）を指す
+      expect(missing.every((f) => f.nodeIds?.[0] === "interest")).toBe(true);
+      const fromBalance = missing.find((f) => f.message.includes("「残高」"));
+      expect(fromBalance?.message).toContain("「利息」");
+      expect(fromBalance?.message).toContain("図にリンクがありません");
+    });
+
+    it("同方向の因果エッジが既にあれば出さない（実線優先）", () => {
+      const findings = lintDiagram(
+        [
+          { id: "balance", name: "残高", kind: "stock" },
+          { id: "interest", name: "利息", kind: "flow", expression: "残高" },
+        ],
+        [edge("e1", "balance", "interest")],
+      );
+      expect(
+        findings.filter((f) => f.rule === "missing-dependency-link"),
+      ).toHaveLength(0);
+    });
+
+    it("式が無ければ出さない（純 CLD は従来どおり）", () => {
+      const findings = lintDiagram(
+        [
+          { id: "a", name: "残業時間" },
+          { id: "b", name: "疲労" },
+        ],
+        [edge("e1", "a", "b"), edge("e2", "b", "a")],
+      );
+      expect(
+        findings.filter((f) => f.rule === "missing-dependency-link"),
+      ).toHaveLength(0);
+    });
+  });
 });

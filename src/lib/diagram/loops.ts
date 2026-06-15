@@ -3,12 +3,12 @@ import findCircuits from "elementary-circuits-directed-graph";
 /** 検出するループ数の上限。超えた分は打ち切って truncated で知らせる */
 export const MAX_LOOPS = 50;
 
-export type LoopPolarity = "R" | "B";
+export type LoopPolarity = "R" | "B" | "?";
 
 export type Loop = {
   /** 回転正規化したノード ID 列から作る決定的な ID */
   id: string;
-  /** 表示ラベル（R1, B1, …）。検出結果のソート順で極性ごとに振る */
+  /** 表示ラベル（R1, B1, ?1, …）。検出結果のソート順で極性ごとに振る */
   label: string;
   /** 一巡するノード ID 列（始点に戻る重複は含まない） */
   nodeIds: string[];
@@ -16,10 +16,18 @@ export type Loop = {
   nodeNames: string[];
   /** nodeIds[i] → nodeIds[(i+1) % n] にあたるエッジ ID 列 */
   edgeIds: string[];
-  /** R = 自己強化（負リンク偶数）、B = バランス（負リンク奇数） */
+  /**
+   * R = 自己強化（負リンク偶数）、B = バランス（負リンク奇数）、
+   * ? = 極性不定（式由来リンクの符号が構造から決まらない場合）
+   */
   polarity: LoopPolarity;
   /** ループ内に遅れリンクを含むか */
   hasDelay: boolean;
+  /**
+   * 式由来（情報リンク）を 1 本でも含む暫定ループか。detectLoops は常に boolean を返す。
+   * 他モジュールのテスト fixture が省略できるよう optional（未指定は「因果のみ」= false 相当）
+   */
+  derived?: boolean;
 };
 
 export type LoopDetectionResult = {
@@ -33,8 +41,11 @@ type LoopEdge = {
   id: string;
   sourceNodeId: string;
   targetNodeId: string;
-  polarity: "+" | "-";
+  /** null = 符号不定（式由来リンクで構造から決まらない場合） */
+  polarity: "+" | "-" | null;
   hasDelay: boolean;
+  /** 式由来（情報リンク）由来のエッジか。因果エッジは false/未指定 */
+  derived?: boolean;
 };
 
 /** findCircuits のコールバックから検出打ち切りを伝えるための内部例外 */
@@ -106,6 +117,8 @@ export function detectLoops(
       }
       return edge;
     });
+    // 符号不定（null）のリンクを含むループは R/B を確定できないので "?"
+    const hasUnknown = loopEdges.some((e) => e.polarity === null);
     const negativeCount = loopEdges.filter((e) => e.polarity === "-").length;
     return {
       id: `loop:${nodeIds.join("→")}`,
@@ -113,8 +126,13 @@ export function detectLoops(
       nodeIds,
       nodeNames: nodeIds.map((id) => nameById.get(id) ?? ""),
       edgeIds: loopEdges.map((e) => e.id),
-      polarity: (negativeCount % 2 === 0 ? "R" : "B") as LoopPolarity,
+      polarity: (hasUnknown
+        ? "?"
+        : negativeCount % 2 === 0
+          ? "R"
+          : "B") as LoopPolarity,
       hasDelay: loopEdges.some((e) => e.hasDelay),
+      derived: loopEdges.some((e) => e.derived === true),
     };
   });
 
@@ -129,8 +147,10 @@ export function detectLoops(
       nodeIds: [edge.sourceNodeId],
       nodeNames: [nameById.get(edge.sourceNodeId) ?? ""],
       edgeIds: [edge.id],
-      polarity: edge.polarity === "-" ? "B" : "R",
+      polarity:
+        edge.polarity === null ? "?" : edge.polarity === "-" ? "B" : "R",
       hasDelay: edge.hasDelay,
+      derived: edge.derived === true,
     });
   }
 
@@ -138,7 +158,7 @@ export function detectLoops(
   loops.sort(
     (a, b) => a.nodeIds.length - b.nodeIds.length || a.id.localeCompare(b.id),
   );
-  const counters = { R: 0, B: 0 };
+  const counters: Record<LoopPolarity, number> = { R: 0, B: 0, "?": 0 };
   for (const loop of loops) {
     counters[loop.polarity] += 1;
     loop.label = `${loop.polarity}${counters[loop.polarity]}`;
