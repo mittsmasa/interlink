@@ -29,16 +29,19 @@ pnpm dev
 - チャット機能には `AI_GATEWAY_API_KEY`（[Vercel AI Gateway](https://vercel.com/docs/ai-gateway)）が必要
 - Google ログインを実クレデンシャルなしで動かす場合は `pnpm dev:preview`（`@emulators/google` による OAuth エミュレータが有効になる）
 
-### AI_GATEWAY_API_KEY は envchain（macOS Keychain）で渡す
+### AI_GATEWAY_API_KEY は fnox（age 暗号化 + macOS Keychain）で渡す
 
-`.env` には書かず、[envchain](https://github.com/sorah/envchain) の `interlink` namespace に保存して起動時に注入する。
+`.env` には書かず、[fnox](https://fnox.jdx.dev/) で管理する。値は age 公開鍵で暗号化して `fnox.toml`（暗号文なので git コミット可）に格納し、復号鍵だけ macOS Keychain に置く。
 
 ```sh
-# 初回のみ: Keychain へ保存
-envchain --set interlink AI_GATEWAY_API_KEY
+# 値を投入/更新するとき（プロンプトに貼り付け。画面にも履歴にも残らない）
+fnox set AI_GATEWAY_API_KEY -p age
 
-# 起動はこの形（envchain を忘れるとチャットだけ失敗する）
-envchain interlink pnpm dev:preview
+# 起動: fnox.toml のあるディレクトリに cd すれば .zshrc の `fnox activate` が自動注入する
+pnpm dev:preview
+
+# activate を入れていない環境（GUI 起動 / cron / 非対話シェル等）は明示注入
+fnox exec -- pnpm dev:preview
 ```
 
 モデルは既定で `google/gemini-2.5-flash`（無料枠で動作確認済み）。`anthropic/claude-sonnet-4-6` 等へは `AI_GATEWAY_MODEL` で差し替え可能だが Vercel 有料クレジットが必要（`gemini-2.5-flash-lite` はツールを呼ばないため不可）。

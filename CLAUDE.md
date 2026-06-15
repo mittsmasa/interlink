@@ -4,13 +4,19 @@
 
 ## dev server の起動（重要）
 
-`AI_GATEWAY_API_KEY` は `.env` でなく **envchain の `interlink` namespace**（macOS Keychain）に入っている。チャット機能を動かすには必ず envchain 経由で起動する:
+`AI_GATEWAY_API_KEY` は **fnox**（age 暗号化 + macOS Keychain）で管理。`fnox.toml` のあるディレクトリに cd すると `.zshrc` の `fnox activate` が secret を自動注入するので、そのまま起動できる:
 
 ```sh
-envchain interlink pnpm dev:preview
+pnpm dev:preview
 ```
 
-- envchain を忘れるとページは表示されるがチャット送信だけ失敗する
+activate を入れていない環境（GUI 起動 / cron / 非対話シェル等）では明示注入する:
+
+```sh
+fnox exec -- pnpm dev:preview
+```
+
+- secret が無いとページは表示されるがチャット送信だけ失敗する
 - `pnpm dev:preview` は OAuth エミュレータ付き（Google 実クレデンシャル不要）。ログインはエミュレータ画面で任意のメールを入力
 - モデル差し替えは `AI_GATEWAY_MODEL`（`<provider>/<model>` 形式、既定 `google/gemini-2.5-flash`）
 
