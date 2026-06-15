@@ -15,6 +15,13 @@
       "when": 1781315125202,
       "tag": "0001_tricky_bloodaxe",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1781426915194,
+      "tag": "0002_sour_jack_flag",
+      "breakpoints": true
     }
   ]
 }
