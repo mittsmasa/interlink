@@ -13,15 +13,17 @@ import {
   useReactFlow,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import { TreeStructureIcon } from "@phosphor-icons/react";
 import { useTheme } from "next-themes";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { matchArchetypes } from "@/lib/diagram/archetypes";
 import { isCausallyLinked } from "@/lib/diagram/dependencies";
 import { deriveSignedDependencies } from "@/lib/diagram/dependency-polarity";
 import { type LintFinding, lintDiagram } from "@/lib/diagram/lint";
 import { detectLoops, type Loop } from "@/lib/diagram/loops";
 import type { Diagram, DiagramEdge, DiagramNode } from "@/lib/queries/diagrams";
-import { updateNodePosition } from "../_actions";
+import { updateNodePosition, updateNodePositions } from "../_actions";
 import { CausalEdge, CausalEdgeMarkers } from "./causal-edge";
 import { DependencyEdge, DependencyEdgeMarkers } from "./dependency-edge";
 import { chooseBulgeSigns } from "./floating-edge-utils";
@@ -74,27 +76,32 @@ function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
     [diagram],
   );
 
-  // ループ・lint・原型は図から毎回導出する（保存しない）。ループ検出には因果エッジに加えて
-  // 式由来リンクも derived エッジとして渡し、式で閉じる円環を暫定ループとして拾う
-  const verification = useMemo(() => {
-    const loopEdges = [
-      ...diagram.edges,
-      ...signedDeps.map((dep) => ({
+  // 情報リンクを「レイアウト・ループ検出」用の派生エッジ形に正規化する。
+  // 同じ集合を computePositions（レイアウト）とループ検出の両方に渡す
+  const derivedLoopEdges = useMemo(
+    () =>
+      signedDeps.map((dep) => ({
         id: dep.id,
         sourceNodeId: dep.fromNodeId,
         targetNodeId: dep.toNodeId,
         polarity: dep.polarity,
         hasDelay: false,
-        derived: true,
+        derived: true as const,
       })),
-    ];
+    [signedDeps],
+  );
+
+  // ループ・lint・原型は図から毎回導出する（保存しない）。ループ検出には因果エッジに加えて
+  // 式由来リンクも derived エッジとして渡し、式で閉じる円環を暫定ループとして拾う
+  const verification = useMemo(() => {
+    const loopEdges = [...diagram.edges, ...derivedLoopEdges];
     const loopResult = detectLoops(diagram.nodes, loopEdges);
     return {
       loopResult,
       findings: lintDiagram(diagram.nodes, diagram.edges),
       matches: matchArchetypes(loopResult.loops),
     };
-  }, [diagram, signedDeps]);
+  }, [diagram, derivedLoopEdges]);
 
   const [highlight, setHighlight] = useState<Highlight>(null);
   const highlightLoop = useCallback((loop: Loop | null) => {
@@ -119,8 +126,20 @@ function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
   );
 
   const { rfNodes, rfEdges } = useMemo(() => {
-    const positions = computePositions(diagram);
+    const positions = computePositions(diagram, {
+      derivedEdges: derivedLoopEdges,
+    });
     const bulgeSigns = chooseBulgeSigns(diagram.edges, positions);
+    // 情報リンクも因果エッジと同じノード回避ロジックで曲げる（固定の片側曲げをやめ、
+    // 他ノードから遠い側へ逃がして重なりを減らす）。因果側の bulge には影響させない
+    const depBulgeSigns = chooseBulgeSigns(
+      signedDeps.map((dep) => ({
+        id: dep.id,
+        sourceNodeId: dep.fromNodeId,
+        targetNodeId: dep.toNodeId,
+      })),
+      positions,
+    );
     const causalEdges = diagram.edges.map(
       (edge): Edge => ({
         id: edge.id,
@@ -140,6 +159,7 @@ function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
         target: dep.toNodeId,
         selectable: false,
         focusable: false,
+        data: { bulgeSign: depBulgeSigns.get(dep.id) ?? 1 },
       }),
     );
     return {
@@ -153,7 +173,7 @@ function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
       ),
       rfEdges: [...causalEdges, ...dependencyEdges],
     };
-  }, [diagram, signedDeps]);
+  }, [diagram, signedDeps, derivedLoopEdges]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(rfNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(rfEdges);
@@ -174,6 +194,26 @@ function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
       fitView({ padding: 0.25, duration: 600 });
     }
   }, [nodeCount, fitView]);
+
+  // 「整列」: 配置済みの固定を無視して全ノードを並べ直し、結果を永続化する
+  const handleArrange = useCallback(() => {
+    const positions = computePositions(diagram, {
+      derivedEdges: derivedLoopEdges,
+      reset: true,
+    });
+    setNodes((nds) =>
+      nds.map((n) => {
+        const p = positions.get(n.id);
+        return p ? { ...n, position: p } : n;
+      }),
+    );
+    updateNodePositions(
+      projectId,
+      [...positions].map(([nodeId, p]) => ({ nodeId, x: p.x, y: p.y })),
+    );
+    // 反映後に全体が画面へ収まるよう次フレームで寄せる
+    requestAnimationFrame(() => fitView({ padding: 0.25, duration: 600 }));
+  }, [diagram, derivedLoopEdges, setNodes, projectId, fitView]);
 
   return (
     <div className="relative size-full">
@@ -224,6 +264,21 @@ function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
       </HighlightContext.Provider>
       <CausalEdgeMarkers />
       <DependencyEdgeMarkers />
+
+      {diagram.nodes.length > 0 && (
+        <div className="-translate-x-1/2 absolute top-4 left-1/2 z-10">
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            className="gap-1.5 shadow-sm"
+            onClick={handleArrange}
+          >
+            <TreeStructureIcon size={16} weight="bold" />
+            整列
+          </Button>
+        </div>
+      )}
 
       {diagram.nodes.length > 0 && (
         <VerificationPanel

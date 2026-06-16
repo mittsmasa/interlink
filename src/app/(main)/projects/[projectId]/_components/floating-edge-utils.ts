@@ -99,8 +99,8 @@ type EdgeRef = { id: string; sourceNodeId: string; targetNodeId: string };
 /**
  * 各エッジの膨らみ側を決定的に選ぶ。
  * - 双方向ペア（A→B と B→A）は互いに逆側へ逃がして重なりを防ぐ
- * - それ以外は、膨らみ候補（法線 ±）のうち両端以外のノードから遠い側を選ぶ
- *   （ループの内側にノードがあれば外側に開く）
+ * - それ以外は、図の重心から外向き（凸）になる側へ曲げる。ループの円弧が
+ *   外へ膨らんで円として閉じて見えるようにするため。
  * 座標はレイアウト計算後のもの（ドラッグ中のライブ座標ではない）で良い。
  */
 export function chooseBulgeSigns(
@@ -108,6 +108,16 @@ export function chooseBulgeSigns(
   positions: Map<string, Point>,
 ): Map<string, BulgeSign> {
   const result = new Map<string, BulgeSign>();
+
+  // 図の中心（全ノードの重心）。各エッジはこの中心から外向きへ膨らむ側を選ぶ
+  let cx = 0;
+  let cy = 0;
+  for (const [, pos] of positions) {
+    cx += pos.x;
+    cy += pos.y;
+  }
+  const n = positions.size || 1;
+  const centroid = { x: cx / n, y: cy / n };
 
   for (const edge of edges) {
     if (edge.sourceNodeId === edge.targetNodeId) {
@@ -147,15 +157,8 @@ export function chooseBulgeSigns(
         x: mid.x + (-dy / dist) * sag * sign,
         y: mid.y + (dx / dist) * sag * sign,
       };
-      let minDist = Number.POSITIVE_INFINITY;
-      for (const [nodeId, pos] of positions) {
-        if (nodeId === edge.sourceNodeId || nodeId === edge.targetNodeId) {
-          continue;
-        }
-        minDist = Math.min(minDist, Math.hypot(apex.x - pos.x, apex.y - pos.y));
-      }
-      // 他ノードがなければ既定の側
-      const score = minDist === Number.POSITIVE_INFINITY ? 0 : minDist;
+      // 中心から遠い側（外向き）ほど高スコア。ループ円弧が外へ膨らみ円形に見える
+      const score = Math.hypot(apex.x - centroid.x, apex.y - centroid.y);
       if (score > bestScore) {
         bestScore = score;
         best = sign;
