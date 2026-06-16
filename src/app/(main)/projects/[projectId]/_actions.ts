@@ -63,6 +63,26 @@ export async function updateNodePosition(
   return { ok: true as const };
 }
 
+/** 「整列」での再配置結果など、複数ノードの位置をまとめて保存する */
+export async function updateNodePositions(
+  projectId: string,
+  positions: { nodeId: string; x: number; y: number }[],
+) {
+  const project = await getOwnedProject(projectId);
+  if (!project) return { ok: false as const };
+  if (positions.length === 0) return { ok: true as const };
+  await db.transaction(async (tx) => {
+    for (const p of positions) {
+      await tx
+        .update(nodes)
+        .set({ x: p.x, y: p.y })
+        .where(and(eq(nodes.id, p.nodeId), eq(nodes.projectId, projectId)));
+    }
+  });
+  // updateNodePosition と同様、位置のみの更新なので updatedAt は触らない
+  return { ok: true as const };
+}
+
 export async function updateNode(
   projectId: string,
   nodeId: string,

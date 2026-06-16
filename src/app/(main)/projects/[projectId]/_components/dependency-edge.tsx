@@ -1,7 +1,7 @@
 "use client";
 
 import { BaseEdge, type EdgeProps, useInternalNode } from "@xyflow/react";
-import { getFloatingEdgePath } from "./floating-edge-utils";
+import { type BulgeSign, getFloatingEdgePath } from "./floating-edge-utils";
 import { useHighlight } from "./highlight-context";
 
 /**
@@ -9,7 +9,7 @@ import { useHighlight } from "./highlight-context";
  * 因果リンク（実線・色・+/− ラベル）と一目で区別できるよう、
  * 破線・中立色・ラベルなしの控えめな下地として描く。保存しない導出物。
  */
-export function DependencyEdge({ id, source, target }: EdgeProps) {
+export function DependencyEdge({ id, source, target, data }: EdgeProps) {
   const sourceNode = useInternalNode(source);
   const targetNode = useInternalNode(target);
   const highlight = useHighlight();
@@ -21,8 +21,9 @@ export function DependencyEdge({ id, source, target }: EdgeProps) {
   const emphasized = highlight?.edgeIds.has(id) ?? false;
   const dimmed = highlight !== null && !emphasized;
 
-  // 軽い曲げを固定で付ける（因果エッジの bulge 計算には乗せない）
-  const { path } = getFloatingEdgePath(sourceNode, targetNode, 1);
+  // 因果エッジと同じノード回避ロジックで決めた曲げ側を使う（chooseBulgeSigns 由来）
+  const bulgeSign = (data as { bulgeSign?: BulgeSign } | undefined)?.bulgeSign;
+  const { path } = getFloatingEdgePath(sourceNode, targetNode, bulgeSign ?? 1);
 
   return (
     <BaseEdge
