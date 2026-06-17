@@ -99,13 +99,17 @@ type EdgeRef = { id: string; sourceNodeId: string; targetNodeId: string };
 /**
  * 各エッジの膨らみ側を決定的に選ぶ。
  * - 双方向ペア（A→B と B→A）は互いに逆側へ逃がして重なりを防ぐ
- * - それ以外は、図の重心から外向き（凸）になる側へ曲げる。ループの円弧が
- *   外へ膨らんで円として閉じて見えるようにするため。
+ * - 両端ともに ring（最大ループ）上のエッジは、図の重心から外向き（凸）になる側へ曲げる。
+ *   ループの円弧が外へ膨らみ円として閉じて見えるようにするため。
+ * - それ以外のエッジは、膨らみ候補（法線 ±）のうち両端以外のノードから遠い側を選ぶ
+ *   （ノードの重なりを避ける）。ring が無い図で全エッジが重心外向きへ振れて交差するのを防ぐ。
  * 座標はレイアウト計算後のもの（ドラッグ中のライブ座標ではない）で良い。
+ * ringNodeIds を渡さない（または空集合の）場合は全エッジがノード回避になる。
  */
 export function chooseBulgeSigns(
   edges: EdgeRef[],
   positions: Map<string, Point>,
+  ringNodeIds?: ReadonlySet<string>,
 ): Map<string, BulgeSign> {
   const result = new Map<string, BulgeSign>();
 
@@ -150,6 +154,11 @@ export function chooseBulgeSigns(
     const sag = dist * SAGITTA_RATIO;
     const mid = { x: (s.x + t.x) / 2, y: (s.y + t.y) / 2 };
 
+    // 両端ともリング上なら重心外向き（円を閉じる）、それ以外はノード回避
+    const onRing =
+      (ringNodeIds?.has(edge.sourceNodeId) ?? false) &&
+      (ringNodeIds?.has(edge.targetNodeId) ?? false);
+
     let best: BulgeSign = 1;
     let bestScore = Number.NEGATIVE_INFINITY;
     for (const sign of [1, -1] as const) {
@@ -157,8 +166,25 @@ export function chooseBulgeSigns(
         x: mid.x + (-dy / dist) * sag * sign,
         y: mid.y + (dx / dist) * sag * sign,
       };
-      // 中心から遠い側（外向き）ほど高スコア。ループ円弧が外へ膨らみ円形に見える
-      const score = Math.hypot(apex.x - centroid.x, apex.y - centroid.y);
+      let score: number;
+      if (onRing) {
+        // 中心から遠い側（外向き）ほど高スコア。ループ円弧が外へ膨らみ円形に見える
+        score = Math.hypot(apex.x - centroid.x, apex.y - centroid.y);
+      } else {
+        // 両端以外のノードから最も遠い側を選び、ノードの重なりを避ける
+        let minDist = Number.POSITIVE_INFINITY;
+        for (const [nodeId, pos] of positions) {
+          if (nodeId === edge.sourceNodeId || nodeId === edge.targetNodeId) {
+            continue;
+          }
+          minDist = Math.min(
+            minDist,
+            Math.hypot(apex.x - pos.x, apex.y - pos.y),
+          );
+        }
+        // 他ノードがなければ既定の側（+1）
+        score = minDist === Number.POSITIVE_INFINITY ? 0 : minDist;
+      }
       if (score > bestScore) {
         bestScore = score;
         best = sign;

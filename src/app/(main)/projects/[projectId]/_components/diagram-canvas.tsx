@@ -29,7 +29,7 @@ import { DependencyEdge, DependencyEdgeMarkers } from "./dependency-edge";
 import { chooseBulgeSigns } from "./floating-edge-utils";
 import { type Highlight, HighlightContext } from "./highlight-context";
 import { InspectorPanel } from "./inspector-panel";
-import { computePositions } from "./layout-diagram";
+import { computePositions, selectRingNodeIds } from "./layout-diagram";
 import { LoopBadges } from "./loop-badges";
 import { SimulationPanel } from "./simulation-panel";
 import { VariableNode } from "./variable-node";
@@ -129,8 +129,13 @@ function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
     const positions = computePositions(diagram, {
       derivedEdges: derivedLoopEdges,
     });
-    const bulgeSigns = chooseBulgeSigns(diagram.edges, positions);
-    // 情報リンクも因果エッジと同じノード回避ロジックで曲げる（固定の片側曲げをやめ、
+    // computePositions と同一エッジ集合由来の loops から ring を導出（基準を揃える）。
+    // 両端とも ring 上のエッジだけ重心外向きに曲げ、それ以外はノード回避に任せる
+    const ringNodeIds = new Set(
+      selectRingNodeIds(verification.loopResult.loops),
+    );
+    const bulgeSigns = chooseBulgeSigns(diagram.edges, positions, ringNodeIds);
+    // 情報リンクも因果エッジと同じロジックで曲げる（固定の片側曲げをやめ、
     // 他ノードから遠い側へ逃がして重なりを減らす）。因果側の bulge には影響させない
     const depBulgeSigns = chooseBulgeSigns(
       signedDeps.map((dep) => ({
@@ -139,6 +144,7 @@ function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
         targetNodeId: dep.toNodeId,
       })),
       positions,
+      ringNodeIds,
     );
     const causalEdges = diagram.edges.map(
       (edge): Edge => ({
@@ -173,7 +179,7 @@ function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
       ),
       rfEdges: [...causalEdges, ...dependencyEdges],
     };
-  }, [diagram, signedDeps, derivedLoopEdges]);
+  }, [diagram, signedDeps, derivedLoopEdges, verification.loopResult.loops]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(rfNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(rfEdges);

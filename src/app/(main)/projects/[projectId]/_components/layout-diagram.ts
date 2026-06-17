@@ -14,6 +14,19 @@ import type { Diagram } from "@/lib/queries/diagrams";
 type SimNode = SimulationNodeDatum & { id: string };
 
 /**
+ * リング（円周配置）を構成するノード集合を選ぶ。最大フィードバックループが
+ * 3 ノード以上のときだけそのノード列を返す（2 ノード以下は円にしない）。
+ * detectLoops の loops はノード数昇順なので末尾が最大ループ。
+ * レイアウトの forceRadial と、エッジ曲げの外向き判定で同じ基準を使うため共有する。
+ */
+export function selectRingNodeIds(
+  loops: readonly { nodeIds: string[] }[],
+): string[] {
+  const largest = loops.at(-1);
+  return largest && largest.nodeIds.length >= 3 ? largest.nodeIds : [];
+}
+
+/**
  * 式由来の情報リンク（破線）。因果エッジと合わせてループ検出・力学リンクに渡す。
  * loops.ts の LoopEdge は未 export のため、構造的に一致する最小形だけ受ける。
  */
@@ -53,9 +66,7 @@ export function computePositions(
   const allEdges = [...diagram.edges, ...derivedEdges];
 
   const { loops } = detectLoops(diagram.nodes, allEdges);
-  // detectLoops はノード数昇順で返すため末尾が最大ループ
-  const largest = loops.at(-1);
-  const ringIds = largest && largest.nodeIds.length >= 3 ? largest.nodeIds : [];
+  const ringIds = selectRingNodeIds(loops);
   // 隣接ノードの間隔がおおむね link distance になる半径
   const ringRadius = Math.max(220, (ringIds.length * 280) / (2 * Math.PI));
   const ringSeeds = new Map(
