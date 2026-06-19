@@ -70,7 +70,7 @@ export function Workspace({
       className="flex min-h-0 flex-1 flex-col md:flex-row"
     >
       <section
-        className="flex min-h-0 w-full flex-col border-b md:shrink-0 md:border-b-0 md:[width:var(--left-w)]"
+        className="flex min-h-0 w-full flex-1 flex-col border-b md:flex-none md:shrink-0 md:border-b-0 md:[width:var(--left-w)]"
         style={{ ["--left-w" as string]: `${leftPct}%` } as React.CSSProperties}
         aria-label="対話"
       >
