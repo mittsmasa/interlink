@@ -25,6 +25,8 @@ import {
 
 type SimulationPanelProps = {
   diagram: Diagram;
+  open: boolean;
+  onToggle: () => void;
 };
 
 /**
@@ -32,8 +34,11 @@ type SimulationPanelProps = {
  * （構造パネルは左上、inspector は右上）。simulate はクライアントで呼ぶ純粋関数で、結果は保存
  * しない（ループ/lint と同思想）。
  */
-export function SimulationPanel({ diagram }: SimulationPanelProps) {
-  const [open, setOpen] = useState(false);
+export function SimulationPanel({
+  diagram,
+  open,
+  onToggle,
+}: SimulationPanelProps) {
   const [dt, setDt] = useState("1");
   const [steps, setSteps] = useState("20");
   const [result, setResult] = useState<SimResult | null>(null);
@@ -79,10 +84,10 @@ export function SimulationPanel({ diagram }: SimulationPanelProps) {
   };
 
   return (
-    <div className="absolute bottom-3 left-3 flex w-80 flex-col-reverse">
+    <div className="absolute bottom-3 left-3 flex w-80 max-sm:w-[calc(100%-1.5rem)] flex-col-reverse">
       <button
         type="button"
-        onClick={() => setOpen((prev) => !prev)}
+        onClick={onToggle}
         className="flex w-fit items-center gap-2 rounded-lg border bg-card/95 px-3 py-1.5 shadow-md backdrop-blur-sm transition-colors hover:bg-accent"
         aria-expanded={open}
       >

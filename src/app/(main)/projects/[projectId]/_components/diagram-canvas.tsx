@@ -3,6 +3,7 @@
 import {
   Background,
   BackgroundVariant,
+  type Connection,
   Controls,
   type Edge,
   type Node,
@@ -13,9 +14,10 @@ import {
   useReactFlow,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { TreeStructureIcon } from "@phosphor-icons/react";
+import { PlusIcon, TreeStructureIcon } from "@phosphor-icons/react";
 import { useTheme } from "next-themes";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { matchArchetypes } from "@/lib/diagram/archetypes";
 import { isCausallyLinked } from "@/lib/diagram/dependencies";
@@ -23,7 +25,12 @@ import { deriveSignedDependencies } from "@/lib/diagram/dependency-polarity";
 import { type LintFinding, lintDiagram } from "@/lib/diagram/lint";
 import { detectLoops, type Loop } from "@/lib/diagram/loops";
 import type { Diagram, DiagramEdge, DiagramNode } from "@/lib/queries/diagrams";
-import { updateNodePosition, updateNodePositions } from "../_actions";
+import {
+  createEdge,
+  createNode,
+  updateNodePosition,
+  updateNodePositions,
+} from "../_actions";
 import { CausalEdge, CausalEdgeMarkers } from "./causal-edge";
 import { DependencyEdge, DependencyEdgeMarkers } from "./dependency-edge";
 import { chooseBulgeSigns } from "./floating-edge-utils";
@@ -52,7 +59,7 @@ export function DiagramCanvas(props: DiagramCanvasProps) {
 }
 
 function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
-  const { fitView } = useReactFlow();
+  const { fitView, screenToFlowPosition } = useReactFlow();
   const { resolvedTheme } = useTheme();
   // resolvedTheme は SSR では不明（常に light 扱い）のため、そのまま使うと
   // ダーク環境で hydration mismatch になる。マウント後にだけ反映する
@@ -64,6 +71,10 @@ function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
     | { kind: "node"; node: DiagramNode }
     | { kind: "edge"; edge: DiagramEdge }
     | null
+  >(null);
+
+  const [openPanel, setOpenPanel] = useState<
+    "verification" | "simulation" | null
   >(null);
 
   // 式の依存（情報リンク）のうち、同方向の因果エッジが無いもの。破線描画とループ参加の
@@ -221,6 +232,62 @@ function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
     requestAnimationFrame(() => fitView({ padding: 0.25, duration: 600 }));
   }, [diagram, derivedLoopEdges, setNodes, projectId, fitView]);
 
+  const handlePaneDoubleClick = useCallback(
+    (event: React.MouseEvent) => {
+      const target = event.target as HTMLElement;
+      if (!target.classList.contains("react-flow__pane")) return;
+
+      const name = window.prompt("変数の名前を入力してください");
+      if (!name?.trim()) return;
+
+      const position = screenToFlowPosition({
+        x: event.clientX,
+        y: event.clientY,
+      });
+      createNode(projectId, name.trim(), position.x, position.y).then(
+        (result) => {
+          if (!result.ok) {
+            toast.error(result.error ?? "変数を追加できませんでした");
+          }
+        },
+      );
+    },
+    [projectId, screenToFlowPosition],
+  );
+
+  const handleAddNode = useCallback(() => {
+    const name = window.prompt("変数の名前を入力してください");
+    if (!name?.trim()) return;
+
+    const wrapper = document.querySelector(".react-flow__viewport");
+    const rect = wrapper?.closest(".react-flow")?.getBoundingClientRect();
+    const cx = rect ? rect.left + rect.width / 2 : window.innerWidth / 2;
+    const cy = rect ? rect.top + rect.height / 2 : window.innerHeight / 2;
+    const position = screenToFlowPosition({ x: cx, y: cy });
+
+    createNode(projectId, name.trim(), position.x, position.y).then(
+      (result) => {
+        if (!result.ok) {
+          toast.error(result.error ?? "変数を追加できませんでした");
+        }
+      },
+    );
+  }, [projectId, screenToFlowPosition]);
+
+  const handleConnect = useCallback(
+    (connection: Connection) => {
+      if (!connection.source || !connection.target) return;
+      createEdge(projectId, connection.source, connection.target, "+").then(
+        (result) => {
+          if (!result.ok) {
+            toast.error(result.error ?? "リンクを追加できませんでした");
+          }
+        },
+      );
+    },
+    [projectId],
+  );
+
   return (
     <div className="relative size-full">
       <HighlightContext.Provider value={highlight}>
@@ -235,8 +302,11 @@ function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
           fitView
           minZoom={0.25}
           maxZoom={1.75}
-          nodesConnectable={false}
+          nodesConnectable
           deleteKeyCode={null}
+          zoomOnDoubleClick={false}
+          onConnect={handleConnect}
+          onDoubleClick={handlePaneDoubleClick}
           onNodeDragStop={(_, node) => {
             updateNodePosition(
               projectId,
@@ -253,7 +323,10 @@ function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
             const found = diagram.edges.find((e) => e.id === edge.id);
             setSelected(found ? { kind: "edge", edge: found } : null);
           }}
-          onPaneClick={() => setSelected(null)}
+          onPaneClick={() => {
+            setSelected(null);
+            setOpenPanel(null);
+          }}
         >
           <Background
             variant={BackgroundVariant.Lines}
@@ -271,8 +344,18 @@ function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
       <CausalEdgeMarkers />
       <DependencyEdgeMarkers />
 
-      {diagram.nodes.length > 0 && (
-        <div className="-translate-x-1/2 absolute top-4 left-1/2 z-10">
+      <div className="-translate-x-1/2 absolute top-4 left-1/2 z-10 flex gap-2">
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          className="gap-1.5 shadow-sm"
+          onClick={handleAddNode}
+        >
+          <PlusIcon size={16} weight="bold" />
+          変数を追加
+        </Button>
+        {diagram.nodes.length > 0 && (
           <Button
             type="button"
             variant="secondary"
@@ -283,26 +366,39 @@ function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
             <TreeStructureIcon size={16} weight="bold" />
             整列
           </Button>
-        </div>
-      )}
+        )}
+      </div>
 
       {diagram.nodes.length > 0 && (
         <VerificationPanel
           loopResult={verification.loopResult}
           findings={verification.findings}
           matches={verification.matches}
+          open={openPanel === "verification"}
+          onToggle={() =>
+            setOpenPanel((p) => (p === "verification" ? null : "verification"))
+          }
           onHighlightLoop={highlightLoop}
           onSelectFinding={selectFinding}
         />
       )}
 
-      {diagram.nodes.length > 0 && <SimulationPanel diagram={diagram} />}
+      {diagram.nodes.length > 0 && (
+        <SimulationPanel
+          diagram={diagram}
+          open={openPanel === "simulation"}
+          onToggle={() =>
+            setOpenPanel((p) => (p === "simulation" ? null : "simulation"))
+          }
+        />
+      )}
 
       {diagram.nodes.length === 0 && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-          <p className="max-w-60 text-center text-muted-foreground text-sm leading-relaxed">
-            対話が進むと、ここに問題の構造が現れます。
-          </p>
+          <div className="max-w-60 text-center text-muted-foreground text-sm leading-relaxed">
+            <p>対話が進むと、ここに問題の構造が現れます。</p>
+            <p className="mt-2 text-xs">ダブルクリックでも変数を追加できます</p>
+          </div>
         </div>
       )}
 

@@ -184,6 +184,61 @@ export async function updateEdge(
   return { ok: true as const };
 }
 
+export async function createNode(
+  projectId: string,
+  name: string,
+  x: number,
+  y: number,
+) {
+  const project = await getOwnedProject(projectId);
+  const trimmed = name.trim();
+  if (!project || !trimmed)
+    return { ok: false as const, error: "名前は必須です" };
+
+  const siblings = await db.query.nodes.findMany({
+    where: eq(nodes.projectId, projectId),
+    columns: { name: true },
+  });
+  if (siblings.some((s) => normalizeName(s.name) === normalizeName(trimmed))) {
+    return { ok: false as const, error: `変数「${trimmed}」は既にあります` };
+  }
+
+  await db.insert(nodes).values({ projectId, name: trimmed, x, y });
+  await touchProject(projectId);
+  return { ok: true as const };
+}
+
+export async function createEdge(
+  projectId: string,
+  sourceNodeId: string,
+  targetNodeId: string,
+  polarity: Polarity,
+) {
+  const project = await getOwnedProject(projectId);
+  if (!project) return { ok: false as const };
+
+  if (sourceNodeId === targetNodeId) {
+    return { ok: false as const, error: "自己ループは作れません" };
+  }
+
+  const existing = await db.query.edges.findFirst({
+    where: and(
+      eq(edges.projectId, projectId),
+      eq(edges.sourceNodeId, sourceNodeId),
+      eq(edges.targetNodeId, targetNodeId),
+    ),
+  });
+  if (existing) {
+    return { ok: false as const, error: "同じリンクが既にあります" };
+  }
+
+  await db
+    .insert(edges)
+    .values({ projectId, sourceNodeId, targetNodeId, polarity, rationale: "" });
+  await touchProject(projectId);
+  return { ok: true as const };
+}
+
 export async function deleteEdge(projectId: string, edgeId: string) {
   const project = await getOwnedProject(projectId);
   if (!project) return { ok: false as const };

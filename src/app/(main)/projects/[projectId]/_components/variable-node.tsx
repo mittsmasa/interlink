@@ -61,8 +61,16 @@ export function VariableNode({ data, selected }: NodeProps) {
   return (
     // ink-in（fill-mode: both）が opacity を保持し続けるため、減光は外側で行う
     <div
-      className={cn("transition-opacity duration-200", dimmed && "opacity-20")}
+      className={cn(
+        "group transition-opacity duration-200",
+        dimmed && "opacity-20",
+      )}
     >
+      <Handle
+        type="target"
+        position={Position.Top}
+        className="!size-1.5 !border-muted-foreground/60 !bg-muted-foreground/40 !opacity-0 transition-opacity group-hover:!opacity-100"
+      />
       <div
         className={cn(
           "ink-in border bg-card px-4 py-2 shadow-sm transition-shadow",
@@ -70,12 +78,6 @@ export function VariableNode({ data, selected }: NodeProps) {
           (selected || emphasized) && "border-ring shadow-md",
         )}
       >
-        {/* エッジはフローティング描画のため、ハンドルは接続解決用に不可視で置く */}
-        <Handle
-          type="target"
-          position={Position.Top}
-          className="!opacity-0 !pointer-events-none"
-        />
         <div className="max-w-40 text-center">
           {kind === "flow" && <ValveMark />}
           {kindLabel && (
@@ -90,12 +92,12 @@ export function VariableNode({ data, selected }: NodeProps) {
             </span>
           )}
         </div>
-        <Handle
-          type="source"
-          position={Position.Top}
-          className="!opacity-0 !pointer-events-none"
-        />
       </div>
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        className="!size-1.5 !border-muted-foreground/60 !bg-muted-foreground/40 !opacity-0 transition-opacity group-hover:!opacity-100"
+      />
     </div>
   );
 }
