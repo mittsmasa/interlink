@@ -1,7 +1,6 @@
 "use client";
 
 import { CaretDownIcon, CompassIcon, WarningIcon } from "@phosphor-icons/react";
-import { useState } from "react";
 import type { ArchetypeMatch } from "@/lib/diagram/archetypes";
 import type { LintFinding } from "@/lib/diagram/lint";
 import type { Loop, LoopDetectionResult } from "@/lib/diagram/loops";
@@ -12,6 +11,8 @@ type VerificationPanelProps = {
   loopResult: LoopDetectionResult;
   findings: LintFinding[];
   matches: ArchetypeMatch[];
+  open: boolean;
+  onToggle: () => void;
   onHighlightLoop: (loop: Loop | null) => void;
   onSelectFinding: (finding: LintFinding) => void;
 };
@@ -24,18 +25,19 @@ export function VerificationPanel({
   loopResult,
   findings,
   matches,
+  open,
+  onToggle,
   onHighlightLoop,
   onSelectFinding,
 }: VerificationPanelProps) {
-  const [open, setOpen] = useState(false);
   const { loops, truncated } = loopResult;
   const warningCount = findings.filter((f) => f.severity === "warning").length;
 
   return (
-    <div className="absolute top-3 left-3 flex max-h-[calc(100%-1.5rem)] w-80 flex-col">
+    <div className="absolute top-3 left-3 flex max-h-[calc(100%-1.5rem)] w-80 max-sm:w-[calc(100%-1.5rem)] flex-col">
       <button
         type="button"
-        onClick={() => setOpen((prev) => !prev)}
+        onClick={onToggle}
         className="flex w-fit items-center gap-2 rounded-lg border bg-card/95 px-3 py-1.5 shadow-md backdrop-blur-sm transition-colors hover:bg-accent"
         aria-expanded={open}
       >
