@@ -124,6 +124,150 @@ export const apikeys = sqliteTable(
   ],
 );
 
+/**
+ * oauth_clients — @better-auth/oauth-provider のクライアント登録。
+ * claude.ai などの MCP クライアントが DCR（RFC 7591）で自己登録する。
+ * string[] / json フィールドは adapter が JSON 文字列へ serialize するため text
+ */
+export const oauthClients = sqliteTable(
+  "oauth_clients",
+  {
+    id: text("id").primaryKey(),
+    clientId: text("client_id").notNull().unique(),
+    clientSecret: text("client_secret"),
+    disabled: integer("disabled", { mode: "boolean" }).default(false),
+    skipConsent: integer("skip_consent", { mode: "boolean" }),
+    enableEndSession: integer("enable_end_session", { mode: "boolean" }),
+    subjectType: text("subject_type"),
+    scopes: text("scopes"),
+    userId: text("user_id").references(() => users.id, {
+      onDelete: "cascade",
+    }),
+    createdAt: integer("created_at", { mode: "timestamp" }),
+    updatedAt: integer("updated_at", { mode: "timestamp" }),
+    name: text("name"),
+    uri: text("uri"),
+    icon: text("icon"),
+    contacts: text("contacts"),
+    tos: text("tos"),
+    policy: text("policy"),
+    softwareId: text("software_id"),
+    softwareVersion: text("software_version"),
+    softwareStatement: text("software_statement"),
+    redirectUris: text("redirect_uris").notNull(),
+    postLogoutRedirectUris: text("post_logout_redirect_uris"),
+    tokenEndpointAuthMethod: text("token_endpoint_auth_method"),
+    grantTypes: text("grant_types"),
+    responseTypes: text("response_types"),
+    public: integer("public", { mode: "boolean" }),
+    type: text("type"),
+    requirePKCE: integer("require_pkce", { mode: "boolean" }),
+    referenceId: text("reference_id"),
+    metadata: text("metadata"),
+  },
+  (t) => [index("oauth_clients_user_id_idx").on(t.userId)],
+);
+
+/**
+ * oauth_refresh_tokens — offline_access で発行する opaque リフレッシュトークン。
+ * token はハッシュ保存。セッションに紐づき、セッション削除で sessionId は null になる
+ */
+export const oauthRefreshTokens = sqliteTable(
+  "oauth_refresh_tokens",
+  {
+    id: text("id").primaryKey(),
+    token: text("token").notNull().unique(),
+    clientId: text("client_id")
+      .notNull()
+      .references(() => oauthClients.clientId, { onDelete: "cascade" }),
+    sessionId: text("session_id").references(() => sessions.id, {
+      onDelete: "set null",
+    }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    referenceId: text("reference_id"),
+    expiresAt: integer("expires_at", { mode: "timestamp" }),
+    createdAt: integer("created_at", { mode: "timestamp" }),
+    revoked: integer("revoked", { mode: "timestamp" }),
+    authTime: integer("auth_time", { mode: "timestamp" }),
+    scopes: text("scopes").notNull(),
+  },
+  (t) => [
+    index("oauth_refresh_tokens_client_id_idx").on(t.clientId),
+    index("oauth_refresh_tokens_session_id_idx").on(t.sessionId),
+    index("oauth_refresh_tokens_user_id_idx").on(t.userId),
+  ],
+);
+
+/**
+ * oauth_access_tokens — audience（resource パラメータ）が無いときに発行される
+ * opaque アクセストークンの置き場。JWT を発行するフローではこのテーブルは使われない
+ */
+export const oauthAccessTokens = sqliteTable(
+  "oauth_access_tokens",
+  {
+    id: text("id").primaryKey(),
+    token: text("token").unique(),
+    clientId: text("client_id")
+      .notNull()
+      .references(() => oauthClients.clientId, { onDelete: "cascade" }),
+    sessionId: text("session_id").references(() => sessions.id, {
+      onDelete: "set null",
+    }),
+    userId: text("user_id").references(() => users.id, {
+      onDelete: "cascade",
+    }),
+    referenceId: text("reference_id"),
+    refreshId: text("refresh_id").references(() => oauthRefreshTokens.id, {
+      onDelete: "cascade",
+    }),
+    expiresAt: integer("expires_at", { mode: "timestamp" }),
+    createdAt: integer("created_at", { mode: "timestamp" }),
+    scopes: text("scopes").notNull(),
+  },
+  (t) => [
+    index("oauth_access_tokens_client_id_idx").on(t.clientId),
+    index("oauth_access_tokens_session_id_idx").on(t.sessionId),
+    index("oauth_access_tokens_user_id_idx").on(t.userId),
+    index("oauth_access_tokens_refresh_id_idx").on(t.refreshId),
+  ],
+);
+
+/** oauth_consents — ユーザーがクライアントへ与えた同意（スコープ）の記録 */
+export const oauthConsents = sqliteTable(
+  "oauth_consents",
+  {
+    id: text("id").primaryKey(),
+    clientId: text("client_id")
+      .notNull()
+      .references(() => oauthClients.clientId, { onDelete: "cascade" }),
+    userId: text("user_id").references(() => users.id, {
+      onDelete: "cascade",
+    }),
+    referenceId: text("reference_id"),
+    scopes: text("scopes").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" }),
+    updatedAt: integer("updated_at", { mode: "timestamp" }),
+  },
+  (t) => [
+    index("oauth_consents_client_id_idx").on(t.clientId),
+    index("oauth_consents_user_id_idx").on(t.userId),
+  ],
+);
+
+/**
+ * jwkss — jwt プラグインの署名鍵。export 名が `jwkss` なのは
+ * drizzle adapter の usePlural が「モデル名 + s」で解決するため（model 名が `jwks`）
+ */
+export const jwkss = sqliteTable("jwks", {
+  id: text("id").primaryKey(),
+  publicKey: text("public_key").notNull(),
+  privateKey: text("private_key").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  expiresAt: integer("expires_at", { mode: "timestamp" }),
+});
+
 export const verifications = sqliteTable("verifications", {
   id: text("id").primaryKey(),
   identifier: text("identifier").notNull(),
