@@ -77,6 +77,27 @@ function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
     "verification" | "simulation" | null
   >(null);
 
+  // フローティングパネルは外側クリック（バックドロップ）と Esc で閉じる。
+  // React Flow の onPaneClick は target が .react-flow__pane そのもののときしか
+  // 発火せず、ノード / エッジ / ツールバー / チャット側の上では閉じられない
+  useEffect(() => {
+    if (!openPanel) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Element | null;
+      if (target?.closest("[data-floating-panel]")) return;
+      setOpenPanel(null);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpenPanel(null);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [openPanel]);
+
   // 式の依存（情報リンク）のうち、同方向の因果エッジが無いもの。破線描画とループ参加の
   // 両方でこの同一集合を使い「破線 ⟺ ループ参加リンク」を一致させる（保存せず毎回導出）
   const signedDeps = useMemo(
@@ -334,10 +355,8 @@ function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
             const found = diagram.edges.find((e) => e.id === edge.id);
             setSelected(found ? { kind: "edge", edge: found } : null);
           }}
-          onPaneClick={() => {
-            setSelected(null);
-            setOpenPanel(null);
-          }}
+          // パネルの開閉は外側 pointerdown ハンドラが担うのでここでは触らない
+          onPaneClick={() => setSelected(null)}
         >
           <Background
             variant={BackgroundVariant.Lines}

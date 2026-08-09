@@ -84,7 +84,12 @@ export function SimulationPanel({
   };
 
   return (
-    <div className="absolute bottom-3 left-3 flex w-80 max-sm:w-[calc(100%-1.5rem)] flex-col-reverse">
+    <div
+      // 外側クリックで閉じる判定の目印（diagram-canvas の pointerdown ハンドラが参照）。
+      // 拡大オーバーレイもこの配下なので、オーバーレイ内のクリックでは閉じない
+      data-floating-panel
+      className="absolute bottom-3 left-3 flex w-80 max-sm:w-[calc(100%-1.5rem)] flex-col-reverse"
+    >
       <button
         type="button"
         onClick={onToggle}
