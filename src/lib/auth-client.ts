@@ -1,3 +1,4 @@
+import { apiKeyClient } from "@better-auth/api-key/client";
 import { genericOAuthClient } from "better-auth/client/plugins";
 import { createAuthClient } from "better-auth/react";
 
@@ -8,5 +9,5 @@ const baseURL =
 
 export const authClient = createAuthClient({
   baseURL,
-  plugins: [genericOAuthClient()],
+  plugins: [genericOAuthClient(), apiKeyClient()],
 });

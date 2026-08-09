@@ -1,3 +1,4 @@
+import { apiKey } from "@better-auth/api-key";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { genericOAuth } from "better-auth/plugins";
@@ -19,6 +20,16 @@ const previewTrustedOrigins = [previewBranchUrl, previewDeploymentUrl].filter(
 const googleClientId = process.env.GOOGLE_CLIENT_ID ?? "emulate-client";
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET ?? "emulate-secret";
 
+/**
+ * 外部エージェント（MCP クライアント）向けの API キー認証。
+ * enableSessionForAPIKeys により x-api-key ヘッダ付きリクエストで
+ * auth.api.getSession がセッションを解決できる
+ */
+const apiKeyPlugin = apiKey({
+  defaultPrefix: "ilk_",
+  enableSessionForAPIKeys: true,
+});
+
 export const auth = betterAuth({
   database: drizzleAdapter(db, {
     provider: "sqlite",
@@ -30,6 +41,7 @@ export const auth = betterAuth({
         baseURL: previewBaseUrl,
         trustedOrigins: previewTrustedOrigins,
         plugins: [
+          apiKeyPlugin,
           genericOAuth({
             config: [
               {
@@ -58,6 +70,7 @@ export const auth = betterAuth({
             clientSecret: googleClientSecret,
           },
         },
+        plugins: [apiKeyPlugin],
       }),
   session: {
     expiresIn: 60 * 60 * 24 * 7,

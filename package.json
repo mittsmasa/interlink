@@ -28,10 +28,13 @@
   },
   "dependencies": {
     "@ai-sdk/react": "3.0.195",
+    "@better-auth/api-key": "1.6.11",
     "@emulators/adapter-next": "0.6.1",
     "@emulators/google": "0.6.1",
+    "@hono/mcp": "0.3.1",
     "@hono/zod-validator": "0.8.0",
     "@libsql/client": "0.17.3",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "@phosphor-icons/react": "2.1.10",
     "@tailwindcss/postcss": "4.3.0",
     "@xyflow/react": "12.11.0",
