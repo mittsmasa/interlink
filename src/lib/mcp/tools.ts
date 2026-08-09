@@ -10,6 +10,34 @@ import { lintDiagram } from "@/lib/diagram/lint";
 import { detectLoops } from "@/lib/diagram/loops";
 import { applyMutationPlan } from "@/lib/diagram/mutate";
 import { loadDiagramSnapshot } from "@/lib/diagram/snapshot";
+import { interviewNotesSchema } from "@/lib/interview/notes";
+import { saveInterviewNotes } from "@/lib/interview/store";
+import {
+  buildMcpInterviewPrompt,
+  deriveGuidance,
+  loadGuidance,
+} from "@/lib/mcp/interview";
+
+/**
+ * initialize レスポンスでクライアントへ渡る静的な使い方の案内。
+ * 動的な現在地（フェーズ / アジェンダ）は prompt とツール応答が担う
+ */
+const SERVER_INSTRUCTIONS = `interlink は「問いの構造を図にする」アプリ。ユーザーの構造的な悩みを聞き取り、因果ループ図（CLD）として一緒に育てる。
+
+- ユーザーの悩みを聞き取りながら図を作るときは、interview プロンプトを使うと聞き取りの方法論と現在地が手に入る（最短の入口）
+- 図を読むには get_diagram。ループ（R/B）・lint 指摘・システム原型に加え、聞き取りノートと「次に聞くこと」（interview.phase / interview.agenda）も返る
+- 図の書き込みは update_diagram（差分形式）。変数は増減を語れる名詞句にし、因果リンクには根拠（rationale）を必ず添える。相関しか確認できていない関係を因果にしない
+- 聞き取った事実（テーマ / 時間挙動 / 理想 / 関係者 / 変数候補）は update_notes に記録する（全置換。既存内容に加えた全体を送る）
+- 書き込み系ツールの応答に含まれる interview.phase / interview.agenda は聞き取りの誘導。対話を進めるときはこれに従う`;
+
+/** 未指定・不正な projectId のときに interview プロンプトが返す導入文 */
+const INTERVIEW_INTRO_PROMPT = `interlink で聞き取りを始めます。まだ対象プロジェクトが決まっていません。
+
+1. list_projects で既存プロジェクトを確認する（続きから再開する場合）
+2. 新しい問いなら create_project でプロジェクトを作る
+3. projectId が決まったら、interview プロンプトに projectId を渡して再実行するか、get_diagram で現在地を読んでから聞き取りを始める
+
+ユーザーに「いま、どんなことが気がかりですか」と尋ねるところから始めてください。`;
 
 /** ツールの実行結果を MCP の text content に包む */
 function toResult(payload: unknown) {
@@ -41,10 +69,44 @@ async function findOwnedProject(projectId: string, userId: string) {
  * （planDiagramMutation → applyMutationPlan）だけを通す。
  */
 export function buildMcpServer(userId: string) {
-  const server = new McpServer({
-    name: "interlink",
-    version: "0.1.0",
-  });
+  const server = new McpServer(
+    {
+      name: "interlink",
+      version: "0.1.0",
+    },
+    { instructions: SERVER_INSTRUCTIONS },
+  );
+
+  server.registerPrompt(
+    "interview",
+    {
+      title: "聞き取りを始める",
+      description:
+        "ユーザーの悩みを聞き取りながら因果ループ図を育てるための方法論と、プロジェクトの現在地（図・ノート・フェーズ・次に聞くこと）を読み込む",
+      argsSchema: {
+        projectId: z
+          .string()
+          .optional()
+          .describe("対象プロジェクトの ID（未指定なら選択の導入から始まる）"),
+      },
+    },
+    async ({ projectId }) => {
+      let text = INTERVIEW_INTRO_PROMPT;
+      if (projectId) {
+        const project = await findOwnedProject(projectId, userId);
+        if (project) {
+          text = await buildMcpInterviewPrompt(project);
+        } else {
+          text = `プロジェクト「${projectId}」が見つかりません。list_projects で正しい projectId を確認してください。`;
+        }
+      }
+      return {
+        messages: [
+          { role: "user" as const, content: { type: "text" as const, text } },
+        ],
+      };
+    },
+  );
 
   server.registerTool(
     "list_projects",
@@ -99,6 +161,7 @@ export function buildMcpServer(userId: string) {
       }
       const diagram = await loadDiagramSnapshot(projectId);
       const loopResult = detectLoops(diagram.nodes, diagram.edges);
+      const guidance = deriveGuidance(project, diagram);
       return toResult({
         project: { id: project.id, title: project.title },
         nodes: diagram.nodes.map((n) => ({
@@ -124,6 +187,8 @@ export function buildMcpServer(userId: string) {
         truncated: loopResult.truncated,
         lintFindings: lintDiagram(diagram.nodes, diagram.edges),
         archetypeMatches: matchArchetypes(loopResult.loops),
+        interviewNotes: guidance.notes,
+        interview: { phase: guidance.phase, agenda: guidance.agenda },
       });
     },
   );
@@ -150,6 +215,8 @@ export function buildMcpServer(userId: string) {
       }
       await applyMutationPlan(projectId, planResult.plan);
       const { plan } = planResult;
+      // 適用後の図で聞き取りの現在地を導出し、次の一手を同梱する
+      const guidance = await loadGuidance(project);
       return toResult({
         ok: true,
         warnings: plan.warnings,
@@ -161,6 +228,33 @@ export function buildMcpServer(userId: string) {
           updatedEdges: plan.updateEdges.length,
           deletedEdges: plan.deleteEdgeIds.length,
         },
+        interview: { phase: guidance.phase, agenda: guidance.agenda },
+      });
+    },
+  );
+
+  server.registerTool(
+    "update_notes",
+    {
+      description:
+        "聞き取りノートを全置換で更新する。テーマ・時間挙動・理想・関係者・変数候補・確認済みループ ID を聞き取ったら反映する。図に置く前の変数候補はここに貯める。現在のノートの内容に新しい事実を加えた全体を送る（既存の内容を欠落させない）",
+      inputSchema: z.object({
+        projectId: z.string().min(1).describe("対象プロジェクトの ID"),
+        notes: interviewNotesSchema,
+      }),
+    },
+    async ({ projectId, notes }) => {
+      const project = await findOwnedProject(projectId, userId);
+      if (!project) {
+        return toError("プロジェクトが見つかりません");
+      }
+      await saveInterviewNotes(projectId, notes);
+      // 保存後のノートと最新の図で現在地を導出する
+      const saved = await findOwnedProject(projectId, userId);
+      const guidance = await loadGuidance(saved ?? project);
+      return toResult({
+        ok: true,
+        interview: { phase: guidance.phase, agenda: guidance.agenda },
       });
     },
   );

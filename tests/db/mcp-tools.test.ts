@@ -33,6 +33,7 @@ describe("MCP tools", () => {
       "get_diagram",
       "list_projects",
       "update_diagram",
+      "update_notes",
     ]);
     // diff スキーマが JSON Schema へ変換されて公開されていること（zod 4 互換の確認）
     const update = tools.find((t) => t.name === "update_diagram");
@@ -168,5 +169,122 @@ describe("MCP tools", () => {
       project: { id: string; title: string };
     };
     expect(payload.project.title).toBe("MCP からの問い");
+  });
+});
+
+describe("MCP interview context", () => {
+  it("prompts/list に interview が列挙される", async () => {
+    const user = await createUser();
+    const client = await connectClient(user.id);
+    const { prompts } = await client.listPrompts();
+    expect(prompts.map((p) => p.name)).toEqual(["interview"]);
+  });
+
+  it("interview プロンプトは図・ノート・projectId 入りで、ツール名が MCP 表記に置換される", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+    await client.callTool({
+      name: "update_diagram",
+      arguments: {
+        projectId: project.id,
+        diff: { upsertNodes: [{ name: "残業時間" }] },
+      },
+    });
+
+    const result = await client.getPrompt({
+      name: "interview",
+      arguments: { projectId: project.id },
+    });
+    const text = (result.messages[0].content as { text: string }).text;
+    expect(text).toContain("いまのフェーズ");
+    expect(text).toContain("残業時間");
+    expect(text).toContain(project.id);
+    expect(text).toContain("update_notes");
+    expect(text).toContain("update_diagram");
+    // アプリ内チャットのツール名表記が残っていないこと
+    expect(text).not.toMatch(/updateNotes|updateDiagram/);
+  });
+
+  it("interview プロンプトは projectId 未指定なら導入文、所有外なら不存在の案内を返す", async () => {
+    const user = await createUser();
+    const other = await createUser();
+    const otherProject = await createProject(other.id);
+    const client = await connectClient(user.id);
+
+    const intro = await client.getPrompt({ name: "interview", arguments: {} });
+    const introText = (intro.messages[0].content as { text: string }).text;
+    expect(introText).toContain("list_projects");
+    expect(introText).toContain("create_project");
+
+    const denied = await client.getPrompt({
+      name: "interview",
+      arguments: { projectId: otherProject.id },
+    });
+    const deniedText = (denied.messages[0].content as { text: string }).text;
+    expect(deniedText).toContain("見つかりません");
+  });
+
+  it("update_notes が保存とフェーズ返却を行い、テーマ+挙動で draft へ進む", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+
+    const result = await client.callTool({
+      name: "update_notes",
+      arguments: {
+        projectId: project.id,
+        notes: {
+          theme: "残業が減らない",
+          behavior: {
+            pattern: "increasing",
+            description: "半年前から増え続けている",
+          },
+          idealBehavior: null,
+          stakeholders: [],
+          variableCandidates: [],
+          confirmedLoopIds: [],
+        },
+      },
+    });
+    expect(result.isError).toBeFalsy();
+    const payload = JSON.parse(textOf(result)) as {
+      ok: boolean;
+      interview: { phase: string; agenda: string[] };
+    };
+    expect(payload.ok).toBe(true);
+    expect(payload.interview.phase).toBe("draft");
+    expect(payload.interview.agenda.length).toBeGreaterThan(0);
+  });
+
+  it("update_diagram / get_diagram の応答に interview の誘導が同梱される", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+
+    const update = await client.callTool({
+      name: "update_diagram",
+      arguments: {
+        projectId: project.id,
+        diff: { upsertNodes: [{ name: "疲労" }] },
+      },
+    });
+    const updatePayload = JSON.parse(textOf(update)) as {
+      interview: { phase: string; agenda: string[] };
+    };
+    // 図に変数が置かれたのでフェーズは draft
+    expect(updatePayload.interview.phase).toBe("draft");
+
+    const read = await client.callTool({
+      name: "get_diagram",
+      arguments: { projectId: project.id },
+    });
+    const readPayload = JSON.parse(textOf(read)) as {
+      interviewNotes: { theme: string | null };
+      interview: { phase: string; agenda: string[] };
+    };
+    expect(readPayload.interviewNotes).toHaveProperty("theme");
+    expect(readPayload.interview.phase).toBe("draft");
+    expect(readPayload.interview.agenda.length).toBeGreaterThan(0);
   });
 });
