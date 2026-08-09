@@ -43,3 +43,13 @@ fnox exec -- pnpm dev:preview
 ## 既知の罠
 
 - `.ink-in` アニメーション（`animation-fill-mode: both`）は transform / opacity を終端値で保持し続けるため、インライン transform や opacity クラスと同居させると上書きされる。位置決め・減光は別のラッパー要素に分離する（M1 / M2 で各 1 回踏んだ）
+
+<!-- BEGIN:nextjs-agent-rules -->
+
+# This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->
