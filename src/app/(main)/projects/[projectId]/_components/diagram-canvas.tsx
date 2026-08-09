@@ -205,7 +205,6 @@ function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
 
   // ノード数が変わったら新しい構造が収まるように寄せる
   const nodeCount = diagram.nodes.length;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: nodeCount 変化時のみ実行する
   useEffect(() => {
     if (nodeCount > 0) {
       fitView({ padding: 0.25, duration: 600 });
