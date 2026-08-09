@@ -8,6 +8,7 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -29,13 +30,17 @@ type ApiKeyDialogProps = {
 
 /**
  * MCP クライアント用 API キーの発行・一覧・失効。
- * キーの平文は発行レスポンスにのみ含まれるため、発行直後の 1 回だけ表示する
+ * キーの平文は発行レスポンスにのみ含まれるため発行直後の 1 回だけ表示する。
+ * その間はダイアログ全体を受け渡し表示に切り替え、一覧・失効操作を出さない
+ * （コピーという一回きりの操作から注意を逸らさないため）
  */
 export function ApiKeyDialog({ open, onOpenChange }: ApiKeyDialogProps) {
   const [keys, setKeys] = useState<ApiKeyRow[]>([]);
   const [createdKey, setCreatedKey] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
+  /** インライン失効確認の対象。ゴミ箱 → この行だけ確認表示に変わる */
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
 
   const loadKeys = useCallback(async () => {
     const { data, error } = await authClient.apiKey.list();
@@ -53,6 +58,7 @@ export function ApiKeyDialog({ open, onOpenChange }: ApiKeyDialogProps) {
       // 閉じたら平文キーを画面から消す（再表示不可の明示）
       setCreatedKey(null);
       setCopied(false);
+      setConfirmingId(null);
     }
   }, [open, loadKeys]);
 
@@ -83,6 +89,7 @@ export function ApiKeyDialog({ open, onOpenChange }: ApiKeyDialogProps) {
         return;
       }
       toast.success("API キーを失効しました");
+      setConfirmingId(null);
       await loadKeys();
     } finally {
       setBusy(false);
@@ -93,88 +100,141 @@ export function ApiKeyDialog({ open, onOpenChange }: ApiKeyDialogProps) {
     if (!createdKey) return;
     await navigator.clipboard.writeText(createdKey);
     setCopied(true);
-    toast.success("コピーしました");
   };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>API キー</DialogTitle>
-          <DialogDescription>
-            外部エージェント（MCP クライアント）からの接続に使います。キーは
-            x-api-key ヘッダで送ります
-          </DialogDescription>
-        </DialogHeader>
+      {createdKey ? (
+        // 受け渡しモード: 発行直後の平文キーだけに集中させる
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>新しい API キー</DialogTitle>
+            <DialogDescription>
+              このキーは今だけ表示されます。コピーして MCP
+              クライアントの設定に保存してください
+            </DialogDescription>
+          </DialogHeader>
 
-        <Button
-          onClick={createKey}
-          disabled={busy}
-          className="justify-self-start"
-        >
-          新しいキーを発行
-        </Button>
-
-        {createdKey && (
           <div className="min-w-0 rounded-md border bg-muted/50 p-3">
-            <div className="flex items-center gap-2">
-              <code className="min-w-0 flex-1 truncate text-sm">
-                {createdKey}
-              </code>
-              <Button
-                variant="outline"
-                size="icon"
-                onClick={copyKey}
-                aria-label="キーをコピー"
-              >
-                {copied ? (
-                  <CheckIcon className="size-4" />
-                ) : (
-                  <CopyIcon className="size-4" />
-                )}
-              </Button>
-            </div>
-            <p className="mt-2 text-muted-foreground text-xs">
-              このキーは二度と表示されません。今すぐコピーしてください
-            </p>
+            <code className="block break-all text-sm">{createdKey}</code>
           </div>
-        )}
 
-        <div className="flex flex-col gap-2">
-          <p className="font-medium text-sm">発行済みキー</p>
-          {keys.length === 0 ? (
-            <p className="text-muted-foreground text-sm">
-              キーはまだありません
-            </p>
-          ) : (
-            <ul className="flex flex-col gap-1">
-              {keys.map((key) => (
-                <li
-                  key={key.id}
-                  className="flex items-center gap-3 rounded-md border px-3 py-2 text-sm"
-                >
-                  <code className="text-muted-foreground">{key.start}…</code>
-                  <span className="min-w-0 flex-1 truncate text-muted-foreground text-xs">
-                    作成 {formatDate(new Date(key.createdAt).getTime())}
-                    {key.lastRequest
-                      ? ` / 最終使用 ${formatDate(new Date(key.lastRequest).getTime())}`
-                      : " / 未使用"}
-                  </span>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => revokeKey(key.id)}
-                    disabled={busy}
-                    aria-label="キーを失効"
-                  >
-                    <TrashIcon className="size-4" />
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </DialogContent>
+          <DialogFooter>
+            <Button
+              variant={copied ? "outline" : "default"}
+              onClick={copyKey}
+              className="gap-2"
+            >
+              {copied ? (
+                <>
+                  <CheckIcon className="size-4" />
+                  コピーしました
+                </>
+              ) : (
+                <>
+                  <CopyIcon className="size-4" />
+                  キーをコピー
+                </>
+              )}
+            </Button>
+            <Button
+              variant={copied ? "default" : "outline"}
+              onClick={() => {
+                setCreatedKey(null);
+                setCopied(false);
+              }}
+            >
+              完了
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      ) : (
+        // 一覧モード: 発行と管理
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>API キー</DialogTitle>
+            <DialogDescription>
+              外部エージェント（MCP クライアント）からの接続に使います。キーは
+              x-api-key ヘッダで送ります
+            </DialogDescription>
+          </DialogHeader>
+
+          <Button
+            onClick={createKey}
+            disabled={busy}
+            className="justify-self-start"
+          >
+            新しいキーを発行
+          </Button>
+
+          <div className="flex min-w-0 flex-col gap-2">
+            <p className="font-medium text-sm">発行済みキー</p>
+            {keys.length === 0 ? (
+              <p className="text-muted-foreground text-sm">
+                キーはまだありません
+              </p>
+            ) : (
+              <ul className="flex flex-col gap-1">
+                {keys.map((key) =>
+                  confirmingId === key.id ? (
+                    <li
+                      key={key.id}
+                      className="flex items-center gap-3 rounded-md border border-destructive/50 px-3 py-2 text-sm"
+                    >
+                      <span className="min-w-0 flex-1 truncate">
+                        <code className="text-muted-foreground">
+                          {key.start}…
+                        </code>{" "}
+                        を失効しますか？使用中の接続は動かなくなります
+                      </span>
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={() => revokeKey(key.id)}
+                        disabled={busy}
+                      >
+                        失効する
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setConfirmingId(null)}
+                        disabled={busy}
+                      >
+                        キャンセル
+                      </Button>
+                    </li>
+                  ) : (
+                    <li
+                      key={key.id}
+                      className="flex items-center gap-3 rounded-md border px-3 py-2 text-sm"
+                    >
+                      <code className="text-muted-foreground">
+                        {key.start}…
+                      </code>
+                      <span className="min-w-0 flex-1 truncate text-muted-foreground text-xs">
+                        作成 {formatDate(new Date(key.createdAt).getTime())}
+                        {key.lastRequest
+                          ? ` / 最終使用 ${formatDate(new Date(key.lastRequest).getTime())}`
+                          : " / 未使用"}
+                      </span>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => setConfirmingId(key.id)}
+                        disabled={busy}
+                        aria-label="キーを失効"
+                      >
+                        <TrashIcon className="size-4" />
+                      </Button>
+                    </li>
+                  ),
+                )}
+              </ul>
+            )}
+          </div>
+        </DialogContent>
+      )}
     </Dialog>
   );
 }
