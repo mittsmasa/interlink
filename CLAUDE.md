@@ -4,18 +4,13 @@
 
 ## dev server の起動（重要）
 
-`AI_GATEWAY_API_KEY` は **fnox**（age 暗号化 + macOS Keychain）で管理。`fnox.toml` のあるディレクトリに cd すると `.zshrc` の `fnox activate` が secret を自動注入するので、そのまま起動できる:
+`AI_GATEWAY_API_KEY` / `BETTER_AUTH_SECRET` などは **fnox**（age 暗号化 + macOS Keychain）で管理。`dev` / `dev:preview` は script 自体が `fnox exec` を挟むので、非対話シェル（GUI 起動 / cron / エージェント経由）でもそのまま起動できる:
 
 ```sh
 pnpm dev:preview
 ```
 
-activate を入れていない環境（GUI 起動 / cron / 非対話シェル等）では明示注入する:
-
-```sh
-fnox exec -- pnpm dev:preview
-```
-
+- `build` は fnox を挟んでいない。Vercel のデプロイビルドには age 鍵も Keychain も無く、`fnox exec` を入れると壊れるため。ローカルで本番ビルドを確認するときだけ `fnox exec -- pnpm build` と明示する（省くと better-auth が既定 secret の警告を出す）
 - secret が無いとページは表示されるがチャット送信だけ失敗する
 - `pnpm dev:preview` は OAuth エミュレータ付き（Google 実クレデンシャル不要）。ログインはエミュレータ画面で任意のメールを入力
 - モデル差し替えは `AI_GATEWAY_MODEL`（`<provider>/<model>` 形式、既定 `google/gemini-2.5-flash`）
