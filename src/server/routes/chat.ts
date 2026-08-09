@@ -1,9 +1,11 @@
 import { zValidator } from "@hono/zod-validator";
 import {
   convertToModelMessages,
-  stepCountIs,
+  createUIMessageStreamResponse,
+  isStepCount,
   streamText,
   tool,
+  toUIMessageStream,
   type UIMessage,
 } from "ai";
 import { and, eq } from "drizzle-orm";
@@ -80,14 +82,14 @@ export const chatRoute = new Hono().post(
 
     const result = streamText({
       model,
-      system: buildInterviewSystemPrompt(diagram, verification, {
+      instructions: buildInterviewSystemPrompt(diagram, verification, {
         notes,
         phase,
         agenda,
       }),
       messages: await convertToModelMessages(uiMessages),
       // ツール実行後にテキストで続きを話せるよう複数ステップを許可する
-      stopWhen: stepCountIs(4),
+      stopWhen: isStepCount(4),
       tools: {
         updateDiagram: tool({
           description:
@@ -125,19 +127,26 @@ export const chatRoute = new Hono().post(
       },
     });
 
-    return result.toUIMessageStreamResponse({
-      originalMessages: uiMessages,
-      onError: (error) => {
-        console.error("[chat] stream error", error);
-        return "応答の生成に失敗しました。もう一度お試しください。";
-      },
-      onFinish: async ({ messages: finishedMessages }) => {
-        try {
-          await saveMessages(projectId, finishedMessages);
-        } catch (error) {
-          console.error("[chat] saveMessages failed", error);
-        }
-      },
+    return createUIMessageStreamResponse({
+      stream: toUIMessageStream({
+        stream: result.stream,
+        originalMessages: uiMessages,
+        // standalone の toUIMessageStream は、originalMessages の末尾が
+        // assistant でない限り応答メッセージに ID を振らない。未指定だと
+        // ID が空文字のまま保存され履歴が壊れるため明示する
+        generateMessageId: () => crypto.randomUUID(),
+        onError: (error) => {
+          console.error("[chat] stream error", error);
+          return "応答の生成に失敗しました。もう一度お試しください。";
+        },
+        onEnd: async ({ messages: finishedMessages }) => {
+          try {
+            await saveMessages(projectId, finishedMessages);
+          } catch (error) {
+            console.error("[chat] saveMessages failed", error);
+          }
+        },
+      }),
     });
   },
 );
