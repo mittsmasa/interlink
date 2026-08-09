@@ -82,7 +82,13 @@ export function computePositions(
   // リングに属さないノードは、リング上の接続先の外側へ seed する
   // （forceX/Y に引かれて円の内側へ割り込むのを防ぐ）。情報リンク経由の
   // 接続先も対象にすることで、式だけで繋がるノードもリング外周へ寄る。
-  const outerSeed = (nodeId: string) => {
+  //
+  // 接続先が複数あるときは全ての角度を平均する。最初の 1 本だけを見ると、
+  // リングの反対側の隣接に引かれて円弧を跨ぐ位置へ落ちて交差を生む。
+  const ringAnchorAngle = (nodeId: string) => {
+    let sumX = 0;
+    let sumY = 0;
+    let count = 0;
     for (const e of allEdges) {
       const other =
         e.sourceNodeId === nodeId
@@ -91,12 +97,30 @@ export function computePositions(
             ? e.sourceNodeId
             : null;
       const anchor = other ? ringSeeds.get(other) : undefined;
-      if (anchor) {
-        const scale = (ringRadius + 280) / ringRadius;
-        return { x: anchor.x * scale, y: anchor.y * scale };
-      }
+      if (!anchor) continue;
+      // 角度の平均は単位ベクトルの和で取る（0/2π をまたいでも破綻しない）
+      sumX += anchor.x / ringRadius;
+      sumY += anchor.y / ringRadius;
+      count++;
     }
-    return undefined;
+    if (count === 0 || (sumX === 0 && sumY === 0)) return undefined;
+    return Math.atan2(sumY, sumX);
+  };
+
+  // 同じ方角へ落ちる外周ノードは扇状にずらす（団子になって重なるのを防ぐ）
+  const outerAngleUsage = new Map<number, number>();
+  const outerSeed = (nodeId: string) => {
+    const angle = ringAnchorAngle(nodeId);
+    if (angle === undefined) return undefined;
+    // 1° 刻みに丸めた方角ごとに、何番目かで左右へ振り分ける
+    const bucket = Math.round((angle * 180) / Math.PI);
+    const index = outerAngleUsage.get(bucket) ?? 0;
+    outerAngleUsage.set(bucket, index + 1);
+    // 0, +1, -1, +2, -2, … の順に 14° ずつ開く
+    const step = Math.ceil(index / 2) * (index % 2 === 1 ? 1 : -1);
+    const spread = angle + (step * 14 * Math.PI) / 180;
+    const radius = ringRadius + 280;
+    return { x: Math.cos(spread) * radius, y: Math.sin(spread) * radius };
   };
 
   const simNodes: SimNode[] = diagram.nodes.map((n) => {
@@ -121,7 +145,8 @@ export function computePositions(
         .strength(0.4),
     )
     .force("charge", forceManyBody().strength(-900))
-    .force("collide", forceCollide(110))
+    // ノード実幅（最大 192px）の半分 + 余白。点ではなく箱として重なりを避ける
+    .force("collide", forceCollide(130))
     .force("x", forceX(0).strength(0.04))
     .force("y", forceY(0).strength(0.04))
     .force(

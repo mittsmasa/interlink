@@ -8,16 +8,22 @@ import {
 } from "@xyflow/react";
 import type { DiagramEdge } from "@/lib/queries/diagrams";
 import { cn } from "@/lib/utils";
-import { type BulgeSign, getFloatingEdgePath } from "./floating-edge-utils";
+import { getFloatingEdgePath } from "./floating-edge-utils";
 import { useHighlight } from "./highlight-context";
 
-export type CausalEdgeData = { edge: DiagramEdge; bulgeSign?: BulgeSign };
+export type CausalEdgeData = {
+  edge: DiagramEdge;
+  /** 符号付き矢高比（chooseEdgeRouting が決める） */
+  curvature?: number;
+  /** 自己ループが張り出す方角（ラジアン） */
+  selfLoopAngle?: number;
+};
 
 export function CausalEdge({ id, source, target, data, selected }: EdgeProps) {
   const sourceNode = useInternalNode(source);
   const targetNode = useInternalNode(target);
   const highlight = useHighlight();
-  const { edge, bulgeSign } = data as CausalEdgeData;
+  const { edge, curvature, selfLoopAngle } = data as CausalEdgeData;
 
   if (!sourceNode || !targetNode) return null;
 
@@ -27,7 +33,8 @@ export function CausalEdge({ id, source, target, data, selected }: EdgeProps) {
   const { path, labelX, labelY } = getFloatingEdgePath(
     sourceNode,
     targetNode,
-    bulgeSign ?? 1,
+    curvature,
+    selfLoopAngle,
   );
   const isNegative = edge.polarity === "-";
   const color = isNegative ? "var(--vermilion)" : "var(--ink)";
