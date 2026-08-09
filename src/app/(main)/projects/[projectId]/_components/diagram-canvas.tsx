@@ -33,7 +33,7 @@ import {
 } from "../_actions";
 import { CausalEdge, CausalEdgeMarkers } from "./causal-edge";
 import { DependencyEdge, DependencyEdgeMarkers } from "./dependency-edge";
-import { chooseBulgeSigns } from "./floating-edge-utils";
+import { chooseEdgeRouting } from "./floating-edge-utils";
 import { type Highlight, HighlightContext } from "./highlight-context";
 import { InspectorPanel } from "./inspector-panel";
 import { computePositions, selectRingNodeIds } from "./layout-diagram";
@@ -141,21 +141,26 @@ function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
       derivedEdges: derivedLoopEdges,
     });
     // computePositions と同一エッジ集合由来の loops から ring を導出（基準を揃える）。
-    // 両端とも ring 上のエッジだけ重心外向きに曲げ、それ以外はノード回避に任せる
+    // 両端とも ring 上のエッジは円環が外へ膨らむ側を優遇する
     const ringNodeIds = new Set(
       selectRingNodeIds(verification.loopResult.loops),
     );
-    const bulgeSigns = chooseBulgeSigns(diagram.edges, positions, ringNodeIds);
-    // 情報リンクも因果エッジと同じロジックで曲げる（固定の片側曲げをやめ、
-    // 他ノードから遠い側へ逃がして重なりを減らす）。因果側の bulge には影響させない
-    const depBulgeSigns = chooseBulgeSigns(
-      signedDeps.map((dep) => ({
-        id: dep.id,
-        sourceNodeId: dep.fromNodeId,
-        targetNodeId: dep.toNodeId,
-      })),
+    // 因果エッジと情報リンクをまとめて 1 回で解く。別々に解くと互いを避けられない
+    const { curvatures, selfLoopAngles } = chooseEdgeRouting(
+      [
+        ...diagram.edges.map((edge) => ({
+          id: edge.id,
+          sourceNodeId: edge.sourceNodeId,
+          targetNodeId: edge.targetNodeId,
+        })),
+        ...signedDeps.map((dep) => ({
+          id: dep.id,
+          sourceNodeId: dep.fromNodeId,
+          targetNodeId: dep.toNodeId,
+        })),
+      ],
       positions,
-      ringNodeIds,
+      { ringNodeIds },
     );
     const causalEdges = diagram.edges.map(
       (edge): Edge => ({
@@ -163,7 +168,11 @@ function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
         type: "causal",
         source: edge.sourceNodeId,
         target: edge.targetNodeId,
-        data: { edge, bulgeSign: bulgeSigns.get(edge.id) ?? 1 },
+        data: {
+          edge,
+          curvature: curvatures.get(edge.id),
+          selfLoopAngle: selfLoopAngles.get(edge.id),
+        },
       }),
     );
     // 式の依存を情報リンク（破線）として描く。signedDeps は既に同方向の因果エッジが無いものに
@@ -176,7 +185,10 @@ function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
         target: dep.toNodeId,
         selectable: false,
         focusable: false,
-        data: { bulgeSign: depBulgeSigns.get(dep.id) ?? 1 },
+        data: {
+          curvature: curvatures.get(dep.id),
+          selfLoopAngle: selfLoopAngles.get(dep.id),
+        },
       }),
     );
     return {

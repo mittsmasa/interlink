@@ -71,6 +71,43 @@ describe("computePositions", () => {
     );
   });
 
+  it("リング上の複数ノードに繋がる外周ノードは、その中間の方角に落ちる", () => {
+    // 6 角形のリングに、隣り合う 2 ノードから矢印を受ける外周ノード p を足す。
+    // p へ入る向きだけにして、p 自身がループに含まれないようにする。
+    const ring = ["r0", "r1", "r2", "r3", "r4", "r5"];
+    const diagram = mkDiagram(
+      [...ring, "p"].map((id) => ({ id })),
+      [
+        ...ring.map((id, i) => ({
+          id: `ring${i}`,
+          from: id,
+          to: ring[(i + 1) % ring.length],
+        })),
+        { id: "in0", from: "r0", to: "p" },
+        { id: "in1", from: "r1", to: "p" },
+      ],
+    );
+    const positions = computePositions(diagram, { reset: true });
+    const angleOf = (id: string) => {
+      const p = positions.get(id);
+      if (!p) throw new Error(`位置が無い: ${id}`);
+      return Math.atan2(p.y, p.x);
+    };
+    const radiusOf = (id: string) => {
+      const p = positions.get(id);
+      if (!p) throw new Error(`位置が無い: ${id}`);
+      return Math.hypot(p.x, p.y);
+    };
+
+    // r0 は -90°、r1 は -30° に seed される。p はその間へ
+    expect(angleOf("p")).toBeGreaterThan(angleOf("r0"));
+    expect(angleOf("p")).toBeLessThan(angleOf("r1"));
+    // かつリングの外側（円の内側へ割り込まない）
+    expect(radiusOf("p")).toBeGreaterThan(
+      Math.max(radiusOf("r0"), radiusOf("r1")),
+    );
+  });
+
   it("reset=true なら配置済みノードも固定せず並べ直す", () => {
     const diagram = mkDiagram(
       [

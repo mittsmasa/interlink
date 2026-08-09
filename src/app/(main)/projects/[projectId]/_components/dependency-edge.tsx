@@ -1,8 +1,15 @@
 "use client";
 
 import { BaseEdge, type EdgeProps, useInternalNode } from "@xyflow/react";
-import { type BulgeSign, getFloatingEdgePath } from "./floating-edge-utils";
+import { getFloatingEdgePath } from "./floating-edge-utils";
 import { useHighlight } from "./highlight-context";
+
+export type DependencyEdgeData = {
+  /** 符号付き矢高比（chooseEdgeRouting が決める） */
+  curvature?: number;
+  /** 自己ループが張り出す方角（ラジアン） */
+  selfLoopAngle?: number;
+};
 
 /**
  * 式の依存を表す情報リンク（System Dynamics の information link）。
@@ -21,9 +28,14 @@ export function DependencyEdge({ id, source, target, data }: EdgeProps) {
   const emphasized = highlight?.edgeIds.has(id) ?? false;
   const dimmed = highlight !== null && !emphasized;
 
-  // 因果エッジと同じノード回避ロジックで決めた曲げ側を使う（chooseBulgeSigns 由来）
-  const bulgeSign = (data as { bulgeSign?: BulgeSign } | undefined)?.bulgeSign;
-  const { path } = getFloatingEdgePath(sourceNode, targetNode, bulgeSign ?? 1);
+  // 因果エッジと同じ最適化で決めた曲率を使う（chooseEdgeRouting 由来）
+  const { curvature, selfLoopAngle } = (data ?? {}) as DependencyEdgeData;
+  const { path } = getFloatingEdgePath(
+    sourceNode,
+    targetNode,
+    curvature,
+    selfLoopAngle,
+  );
 
   return (
     <BaseEdge
