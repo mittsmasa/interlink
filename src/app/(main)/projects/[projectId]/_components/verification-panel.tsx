@@ -34,7 +34,11 @@ export function VerificationPanel({
   const warningCount = findings.filter((f) => f.severity === "warning").length;
 
   return (
-    <div className="absolute top-3 left-3 flex max-h-[calc(100%-1.5rem)] w-80 max-sm:w-[calc(100%-1.5rem)] flex-col">
+    <div
+      // 外側クリックで閉じる判定の目印（diagram-canvas の pointerdown ハンドラが参照）
+      data-floating-panel
+      className="absolute top-3 left-3 flex max-h-[calc(100%-1.5rem)] w-80 max-sm:w-[calc(100%-1.5rem)] flex-col"
+    >
       <button
         type="button"
         onClick={onToggle}
