@@ -4,7 +4,7 @@ import { useChat } from "@ai-sdk/react";
 import { SidebarSimpleIcon } from "@phosphor-icons/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
 import { useRouter } from "next/navigation";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { InterviewNotes } from "@/lib/interview/notes";
 import type { InterviewPhase } from "@/lib/interview/phase";
@@ -13,6 +13,9 @@ import { cn } from "@/lib/utils";
 import { ChatPanel } from "./chat-panel";
 import { DiagramCanvas } from "./diagram-canvas";
 import { NotesPanel } from "./notes-panel";
+
+// 対話エリアの開閉はプロジェクト横断の表示設定として保持する
+const CHAT_OPEN_STORAGE_KEY = "interlink:workspace:chat-open";
 
 type WorkspaceProps = {
   project: { id: string };
@@ -62,6 +65,19 @@ export function Workspace({
   // MCP 経由で図を操作するときなど、対話を使わない場面ではキャンバスを全幅にする。
   // ChatPanel は unmount せず display:none で畳み、入力中テキストとスクロール位置を保つ
   const [chatOpen, setChatOpen] = useState(true);
+
+  // localStorage は SSR では読めないため、開いた状態で描画してから hydration 後に復元する
+  useEffect(() => {
+    if (localStorage.getItem(CHAT_OPEN_STORAGE_KEY) === "false") {
+      setChatOpen(false);
+    }
+  }, []);
+
+  const toggleChat = () => {
+    const next = !chatOpen;
+    setChatOpen(next);
+    localStorage.setItem(CHAT_OPEN_STORAGE_KEY, String(next));
+  };
 
   const onHandleMove = (e: React.PointerEvent) => {
     if (!draggingRef.current || !containerRef.current) return;
@@ -121,7 +137,7 @@ export function Workspace({
             同じ場所に付くため、向きを含意しない SidebarSimple を使う */}
         <button
           type="button"
-          onClick={() => setChatOpen((prev) => !prev)}
+          onClick={toggleChat}
           aria-expanded={chatOpen}
           aria-controls="workspace-chat"
           aria-label={chatOpen ? "対話エリアを畳む" : "対話エリアを開く"}
