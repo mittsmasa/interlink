@@ -1,11 +1,15 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { and, asc, eq } from "drizzle-orm";
+import {
+  McpServer,
+  ResourceTemplate,
+} from "@modelcontextprotocol/sdk/server/mcp.js";
+import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
 import { projects } from "@/db/schema";
 import { planDiagramMutation } from "@/lib/diagram/apply-diff";
 import { matchArchetypes } from "@/lib/diagram/archetypes";
 import { diagramDiffSchema } from "@/lib/diagram/diff-schema";
+import { renderDiagramExport } from "@/lib/diagram/export";
 import { lintDiagram } from "@/lib/diagram/lint";
 import {
   buildLoopEdges,
@@ -14,7 +18,10 @@ import {
 import { detectLoops, MAX_LOOPS } from "@/lib/diagram/loops";
 import { applyMutationPlan } from "@/lib/diagram/mutate";
 import { loadDiagramSnapshot } from "@/lib/diagram/snapshot";
-import { interviewNotesSchema } from "@/lib/interview/notes";
+import {
+  interviewNotesSchema,
+  parseInterviewNotes,
+} from "@/lib/interview/notes";
 import { saveInterviewNotes } from "@/lib/interview/store";
 import {
   buildMcpInterviewPrompt,
@@ -22,6 +29,8 @@ import {
   loadGuidance,
 } from "@/lib/mcp/interview";
 import { diffStructure } from "@/lib/mcp/structure-diff";
+import { deleteOwnedProject, renameOwnedProject } from "@/lib/projects/manage";
+import { getProjectSummariesByUserId } from "@/lib/queries/projects";
 
 /**
  * initialize レスポンスでクライアントへ渡る静的な使い方の案内。
@@ -32,6 +41,8 @@ const SERVER_INSTRUCTIONS = `interlink は「問いの構造を図にする」�
 - ユーザーの悩みを聞き取りながら図を作るときは、interview プロンプトを使うと聞き取りの方法論と現在地が手に入る（最短の入口）
 - 図を読むには get_diagram。ループ（R/B）・lint 指摘・システム原型に加え、聞き取りノートと「次に聞くこと」（interview.phase / interview.agenda）も返る
 - 図の書き込みは update_diagram（差分形式）。変数は増減を語れる名詞句にし、因果リンクには根拠（rationale）を必ず添える。相関しか確認できていない関係を因果にしない
+- 図を持ち出すときは export_diagram（mermaid はそのまま描画できる。markdown は根拠付きの表）。プロジェクトの改名は update_project、削除は delete_project（取り消せない。ユーザーの明示的な指示があるときだけ）
+- resources でも読める: interlink://projects（一覧）、interlink://projects/{id}/diagram.md（図の markdown）、interlink://projects/{id}/notes.json（聞き取りノート）
 - update_diagram は dryRun: true で適用せずに計画と警告だけ確認できる。適用すると閉じた/開いたループと新しい lint 指摘（structure）が返るので、get_diagram を読み直さなくても結果が分かる
 - warnings は {code, target, message, suggestion} の配列。除外された操作は黙って落ちるので、必ず目を通して suggestion を踏まえて再送する
 - 聞き取った事実（テーマ / 時間挙動 / 理想 / 関係者 / 変数候補）は update_notes に記録する。既定は append（差分だけ送れば既存とマージされる）。整理し直すときだけ mode: "replace" で全体を送る
@@ -154,16 +165,11 @@ export function buildMcpServer(userId: string) {
     "list_projects",
     {
       description:
-        "自分のプロジェクト（問い）の一覧を返す。図を操作する前に projectId を調べるために使う",
+        "自分のプロジェクト（問い）の一覧を返す。図を操作する前に projectId を調べるために使う。各プロジェクトにテーマ・聞き取りフェーズ・変数/リンク/ループ数・確認済みループ数を添える",
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async () => {
-      const rows = await db.query.projects.findMany({
-        where: eq(projects.userId, userId),
-        columns: { id: true, title: true, status: true, updatedAt: true },
-        orderBy: [asc(projects.createdAt)],
-      });
-      return toResult({ projects: rows });
+      return toResult({ projects: await getProjectSummariesByUserId(userId) });
     },
   );
 
@@ -415,5 +421,198 @@ export function buildMcpServer(userId: string) {
     },
   );
 
+  server.registerTool(
+    "export_diagram",
+    {
+      description:
+        "因果ループ図をテキストで持ち出す。mermaid は graph LR（極性をエッジラベル、遅れを点線、ストック/フロー等の役割をノード形状で表し、末尾にループ一覧をコメントで添える）。markdown は変数表・根拠付きリンク表・ループ・システム原型・聞き取りノート要約。どこにも保存せずテキストを返すだけ",
+      inputSchema: z.object({
+        projectId: z.string().min(1).describe("対象プロジェクトの ID"),
+        format: z
+          .enum(["mermaid", "markdown"])
+          .describe("mermaid: そのまま描画できる図 / markdown: 共有用の文書"),
+      }),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ projectId, format }) => {
+      const project = await findOwnedProject(projectId, userId);
+      if (!project) {
+        return toError("プロジェクトが見つかりません");
+      }
+      const text = await renderExport(project, format);
+      return { content: [{ type: "text" as const, text }] };
+    },
+  );
+
+  server.registerTool(
+    "update_project",
+    {
+      description:
+        "プロジェクトのタイトル（問いの一行要約）を変える。聞き取りでテーマが定まったら付け直すのに使う",
+      inputSchema: z.object({
+        projectId: z.string().min(1).describe("対象プロジェクトの ID"),
+        title: z.string().min(1).describe("新しいタイトル"),
+      }),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async ({ projectId, title }) => {
+      const result = await renameOwnedProject(projectId, userId, title);
+      if (!result.ok) {
+        return toError(
+          result.reason === "empty-title"
+            ? "タイトルが空です"
+            : "プロジェクトが見つかりません",
+        );
+      }
+      return toResult({
+        ok: true,
+        project: { id: projectId, title: result.title },
+      });
+    },
+  );
+
+  server.registerTool(
+    "delete_project",
+    {
+      description:
+        "プロジェクトを削除する。図・聞き取りノート・チャット履歴もすべて消え、取り消せない。ユーザーが明示的に削除を求めたときだけ使うこと",
+      inputSchema: z.object({
+        projectId: z.string().min(1).describe("削除するプロジェクトの ID"),
+      }),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async ({ projectId }) => {
+      const deleted = await deleteOwnedProject(projectId, userId);
+      if (!deleted) {
+        return toError("プロジェクトが見つかりません");
+      }
+      return toResult({ ok: true, deleted: { id: projectId } });
+    },
+  );
+
+  // --- resources: 読み取り専用の入口。ツールを呼ばずに現在地を参照できる ---
+
+  server.registerResource(
+    "projects",
+    "interlink://projects",
+    {
+      title: "プロジェクト一覧",
+      description:
+        "自分のプロジェクト一覧（list_projects と同じ内容）。各プロジェクトの図は interlink://projects/{id}/diagram.md で読める",
+      mimeType: "application/json",
+    },
+    async (uri) => ({
+      contents: [
+        {
+          uri: uri.href,
+          mimeType: "application/json",
+          text: JSON.stringify(
+            { projects: await getProjectSummariesByUserId(userId) },
+            null,
+            2,
+          ),
+        },
+      ],
+    }),
+  );
+
+  /** 所有プロジェクトを template の一覧として列挙する（diagram.md / notes.json 共用） */
+  const listProjectResources =
+    (suffix: string, describe: string) => async () => {
+      const summaries = await getProjectSummariesByUserId(userId);
+      return {
+        resources: summaries.map((p) => ({
+          uri: `interlink://projects/${p.id}/${suffix}`,
+          name: `${p.title} — ${describe}`,
+        })),
+      };
+    };
+
+  server.registerResource(
+    "project-diagram",
+    new ResourceTemplate("interlink://projects/{id}/diagram.md", {
+      list: listProjectResources("diagram.md", "図"),
+    }),
+    {
+      title: "因果ループ図（markdown）",
+      description:
+        "プロジェクトの因果ループ図を markdown で読む（export_diagram の markdown と同じ）",
+      mimeType: "text/markdown",
+    },
+    async (uri, { id }) => {
+      const projectId = Array.isArray(id) ? id[0] : id;
+      const project = await findOwnedProject(projectId, userId);
+      if (!project) {
+        throw new Error("プロジェクトが見つかりません");
+      }
+      return {
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: "text/markdown",
+            text: await renderExport(project, "markdown"),
+          },
+        ],
+      };
+    },
+  );
+
+  server.registerResource(
+    "project-notes",
+    new ResourceTemplate("interlink://projects/{id}/notes.json", {
+      list: listProjectResources("notes.json", "聞き取りノート"),
+    }),
+    {
+      title: "聞き取りノート（JSON）",
+      description:
+        "プロジェクトの聞き取りノート（テーマ / 時間挙動 / 理想 / 関係者 / 変数候補 / 確認済みループ ID）。update_notes に渡す形と同じ",
+      mimeType: "application/json",
+    },
+    async (uri, { id }) => {
+      const projectId = Array.isArray(id) ? id[0] : id;
+      const project = await findOwnedProject(projectId, userId);
+      if (!project) {
+        throw new Error("プロジェクトが見つかりません");
+      }
+      return {
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: "application/json",
+            text: JSON.stringify(
+              parseInterviewNotes(project.interviewNotes),
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    },
+  );
+
   return server;
+}
+
+/** export_diagram と diagram.md resource が共有する描画。図を読んでテキストにする */
+async function renderExport(
+  project: { id: string; title: string; interviewNotes: string | null },
+  format: "mermaid" | "markdown",
+) {
+  const diagram = await loadDiagramSnapshot(project.id);
+  return renderDiagramExport(format, {
+    title: project.title,
+    nodes: diagram.nodes,
+    edges: diagram.edges,
+    notes: parseInterviewNotes(project.interviewNotes),
+  });
 }

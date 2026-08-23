@@ -6,9 +6,11 @@ type AppHeaderProps = {
   user: { name: string; image?: string | null };
   /** ワークスペースなどでアプリ名の隣に出す副題 */
   subtitle?: React.ReactNode;
+  /** 画面固有の操作（書き出しなど）。テーマ切替の左に並ぶ */
+  actions?: React.ReactNode;
 };
 
-export function AppHeader({ user, subtitle }: AppHeaderProps) {
+export function AppHeader({ user, subtitle, actions }: AppHeaderProps) {
   return (
     <header className="flex h-14 shrink-0 items-center justify-between border-b px-4 sm:px-6">
       <div className="flex min-w-0 items-baseline gap-4">
@@ -18,6 +20,7 @@ export function AppHeader({ user, subtitle }: AppHeaderProps) {
         {subtitle}
       </div>
       <div className="flex items-center gap-1">
+        {actions}
         <ThemeToggle />
         <UserMenu user={user} />
       </div>
