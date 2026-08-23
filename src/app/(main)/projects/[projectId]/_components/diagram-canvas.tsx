@@ -20,9 +20,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { matchArchetypes } from "@/lib/diagram/archetypes";
-import { isCausallyLinked } from "@/lib/diagram/dependencies";
-import { deriveSignedDependencies } from "@/lib/diagram/dependency-polarity";
 import { type LintFinding, lintDiagram } from "@/lib/diagram/lint";
+import {
+  deriveLoopDependencies,
+  toDerivedLoopEdges,
+} from "@/lib/diagram/loop-edges";
 import { detectLoops, type Loop } from "@/lib/diagram/loops";
 import type { Diagram, DiagramEdge, DiagramNode } from "@/lib/queries/diagrams";
 import {
@@ -99,27 +101,14 @@ function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
   }, [openPanel]);
 
   // 式の依存（情報リンク）のうち、同方向の因果エッジが無いもの。破線描画とループ参加の
-  // 両方でこの同一集合を使い「破線 ⟺ ループ参加リンク」を一致させる（保存せず毎回導出）
-  const signedDeps = useMemo(
-    () =>
-      deriveSignedDependencies(diagram.nodes).filter(
-        (dep) => !isCausallyLinked(dep.fromNodeId, dep.toNodeId, diagram.edges),
-      ),
-    [diagram],
-  );
+  // 両方でこの同一集合を使い「破線 ⟺ ループ参加リンク」を一致させる（保存せず毎回導出）。
+  // 導出は loop-edges.ts に集約し、chat / MCP と同じ集合を見る
+  const signedDeps = useMemo(() => deriveLoopDependencies(diagram), [diagram]);
 
   // 情報リンクを「レイアウト・ループ検出」用の派生エッジ形に正規化する。
   // 同じ集合を computePositions（レイアウト）とループ検出の両方に渡す
   const derivedLoopEdges = useMemo(
-    () =>
-      signedDeps.map((dep) => ({
-        id: dep.id,
-        sourceNodeId: dep.fromNodeId,
-        targetNodeId: dep.toNodeId,
-        polarity: dep.polarity,
-        hasDelay: false,
-        derived: true as const,
-      })),
+    () => toDerivedLoopEdges(signedDeps),
     [signedDeps],
   );
 

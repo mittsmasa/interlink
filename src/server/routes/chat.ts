@@ -20,6 +20,7 @@ import { planDiagramMutation } from "@/lib/diagram/apply-diff";
 import { matchArchetypes } from "@/lib/diagram/archetypes";
 import { diagramDiffSchema } from "@/lib/diagram/diff-schema";
 import { lintDiagram } from "@/lib/diagram/lint";
+import { buildLoopEdges } from "@/lib/diagram/loop-edges";
 import { detectLoops } from "@/lib/diagram/loops";
 import { applyMutationPlan } from "@/lib/diagram/mutate";
 import { loadDiagramSnapshot } from "@/lib/diagram/snapshot";
@@ -62,7 +63,7 @@ export const chatRoute = new Hono().post(
 
     const diagram = await loadDiagramSnapshot(projectId);
     // 検証結果も埋め込み、ループの確かさを問う対話をできるようにする
-    const loopResult = detectLoops(diagram.nodes, diagram.edges);
+    const loopResult = detectLoops(diagram.nodes, buildLoopEdges(diagram));
     const verification = {
       loopResult,
       findings: lintDiagram(diagram.nodes, diagram.edges),

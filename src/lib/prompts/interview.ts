@@ -1,6 +1,6 @@
 import type { ArchetypeMatch } from "@/lib/diagram/archetypes";
 import type { LintFinding } from "@/lib/diagram/lint";
-import type { LoopDetectionResult } from "@/lib/diagram/loops";
+import type { Loop, LoopDetectionResult } from "@/lib/diagram/loops";
 import {
   BEHAVIOR_PATTERN_LABELS,
   type InterviewNotes,
@@ -76,6 +76,13 @@ export type DiagramVerification = {
   matches: ArchetypeMatch[];
 };
 
+/** ループ極性の表示。"?" は式由来リンクの符号が構造から決まらず R/B を確定できない状態 */
+const LOOP_POLARITY_LABELS: Record<Loop["polarity"], string> = {
+  R: "自己強化",
+  B: "バランス",
+  "?": "極性未定（式の符号が構造から決まらない）",
+};
+
 /** プロンプトに埋め込むループ数の上限 */
 const PROMPT_MAX_LOOPS = 10;
 /** プロンプトに埋め込む lint 指摘数の上限 */
@@ -98,10 +105,11 @@ export function buildVerificationPromptSection(
   } else {
     const shown = loopResult.loops.slice(0, PROMPT_MAX_LOOPS);
     for (const loop of shown) {
-      const kind = loop.polarity === "R" ? "自己強化" : "バランス";
+      const kind = LOOP_POLARITY_LABELS[loop.polarity];
       const delay = loop.hasDelay ? "、遅れあり" : "";
+      const derived = loop.derived ? "、式由来の暫定ループ" : "";
       lines.push(
-        `- ${loop.label}（${kind}${delay}、id: ${loop.id}）: ${loop.nodeNames.join(" → ")} → ${loop.nodeNames[0]}`,
+        `- ${loop.label}（${kind}${delay}${derived}、id: ${loop.id}）: ${loop.nodeNames.join(" → ")} → ${loop.nodeNames[0]}`,
       );
     }
     const hiddenCount = loopResult.loops.length - shown.length;

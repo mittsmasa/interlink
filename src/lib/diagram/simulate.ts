@@ -454,28 +454,32 @@ export function simulate(
     return snap;
   };
 
-  const series: SimSnapshot[] = [];
-
-  for (let t = 0; t < config.steps; t++) {
-    // ① 確定順に flow/auxiliary を計算
+  /** 確定順に flow/auxiliary を評価して scope を更新する。失敗したら SimError */
+  const evaluateOrdered = (): SimError | null => {
     for (const { node, placeholder, compiled } of ordered) {
       let raw: unknown;
       try {
         raw = compiled.evaluate(scope);
       } catch (e) {
         return {
-          ok: false,
-          error: {
-            type: "eval",
-            message: `「${node.name}」の評価に失敗しました: ${(e as Error).message}`,
-            nodeId: node.id,
-          },
+          type: "eval",
+          message: `「${node.name}」の評価に失敗しました: ${(e as Error).message}`,
+          nodeId: node.id,
         };
       }
       const val = expectFinite(raw, node.name);
-      if (typeof val !== "number") return { ok: false, error: val };
+      if (typeof val !== "number") return val;
       scope[placeholder] = val;
     }
+    return null;
+  };
+
+  const series: SimSnapshot[] = [];
+
+  for (let t = 0; t < config.steps; t++) {
+    // ① 確定順に flow/auxiliary を計算
+    const error = evaluateOrdered();
+    if (error) return { ok: false, error };
 
     // ④ このステップ開始時点（stock 更新前）のスナップショットを記録
     series.push(snapshot(t));
@@ -496,6 +500,12 @@ export function simulate(
     // ③ stock を一斉に書き換える
     for (const [ph, v] of next) scope[ph] = v;
   }
+
+  // ⑤ 最終ステップで更新した stock と、それに基づく flow/aux を t=steps として記録する。
+  // これが無いと steps 回更新した最後の値が series に現れない（steps+1 件になる）
+  const finalError = evaluateOrdered();
+  if (finalError) return { ok: false, error: finalError };
+  series.push(snapshot(config.steps));
 
   return { ok: true, series, order: ordered.map((o) => o.node.name) };
 }

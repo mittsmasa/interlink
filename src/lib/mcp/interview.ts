@@ -1,5 +1,6 @@
 import { matchArchetypes } from "@/lib/diagram/archetypes";
 import { lintDiagram } from "@/lib/diagram/lint";
+import { buildLoopEdges } from "@/lib/diagram/loop-edges";
 import { detectLoops } from "@/lib/diagram/loops";
 import { loadDiagramSnapshot } from "@/lib/diagram/snapshot";
 import { buildInterviewAgenda } from "@/lib/interview/agenda";
@@ -32,7 +33,7 @@ export function deriveGuidance(
   diagram: DiagramSnapshot,
 ): InterviewGuidance {
   const notes = parseInterviewNotes(project.interviewNotes);
-  const { loops } = detectLoops(diagram.nodes, diagram.edges);
+  const { loops } = detectLoops(diagram.nodes, buildLoopEdges(diagram));
   const phaseInput = { nodes: diagram.nodes, edges: diagram.edges, loops };
   const phase = deriveInterviewPhase(notes, phaseInput);
   const agenda = buildInterviewAgenda(notes, phaseInput, phase);
@@ -57,7 +58,7 @@ export async function buildMcpInterviewPrompt(
   project: ProjectRow,
 ): Promise<string> {
   const diagram = await loadDiagramSnapshot(project.id);
-  const loopResult = detectLoops(diagram.nodes, diagram.edges);
+  const loopResult = detectLoops(diagram.nodes, buildLoopEdges(diagram));
   const verification = {
     loopResult,
     findings: lintDiagram(diagram.nodes, diagram.edges),
