@@ -12,6 +12,7 @@ import {
 } from "@/db/schema";
 import { normalizeName } from "@/lib/diagram/apply-diff";
 import { validateExpressionStructure } from "@/lib/diagram/simulate";
+import { renameOwnedProject } from "@/lib/projects/manage";
 import { requireSession } from "@/lib/session";
 
 /** プロジェクトの所有を確認して返す。他人のものなら null */
@@ -35,13 +36,9 @@ async function touchProject(projectId: string) {
 }
 
 export async function updateProjectTitle(projectId: string, title: string) {
-  const project = await getOwnedProject(projectId);
-  const trimmed = title.trim();
-  if (!project || !trimmed) return { ok: false as const };
-  await db
-    .update(projects)
-    .set({ title: trimmed, updatedAt: Date.now() })
-    .where(eq(projects.id, projectId));
+  const session = await requireSession();
+  const result = await renameOwnedProject(projectId, session.user.id, title);
+  if (!result.ok) return { ok: false as const };
   revalidatePath(`/projects/${projectId}`);
   revalidatePath("/");
   return { ok: true as const };
