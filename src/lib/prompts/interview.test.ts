@@ -225,4 +225,22 @@ describe("formatNotesForPrompt", () => {
     expect(text).toContain("- 上司: 納期を守りたい");
     expect(text).toContain("- 残業時間（出所: 自分）");
   });
+
+  it("surface で UI 参照の文言を切り替える（既定は chat）", () => {
+    const chat = buildInterviewSystemPrompt(
+      { nodes: [], edges: [] },
+      emptyVerification,
+      emptyGuidance,
+    );
+    expect(chat).toContain("画面左下のシミュレーション");
+
+    const mcp = buildInterviewSystemPrompt(
+      { nodes: [], edges: [] },
+      emptyVerification,
+      emptyGuidance,
+      { surface: "mcp" },
+    );
+    expect(mcp).not.toContain("画面左下");
+    expect(mcp).toContain("シミュレーション結果を確認");
+  });
 });

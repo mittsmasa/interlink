@@ -3,6 +3,7 @@ import {
   type CurrentDiagram,
   normalizeName,
   planDiagramMutation,
+  suggestNodeNames,
 } from "./apply-diff";
 import { diagramDiffSchema } from "./diff-schema";
 
@@ -25,6 +26,24 @@ describe("normalizeName", () => {
   it("前後空白・全角半角・大文字小文字のゆれを吸収する", () => {
     expect(normalizeName(" 残業時間 ")).toBe(normalizeName("残業時間"));
     expect(normalizeName("ＫＰＩ")).toBe(normalizeName("kpi"));
+  });
+});
+
+describe("suggestNodeNames", () => {
+  it("部分一致を最優先し、編集距離の近い順に最大 3 件返す", () => {
+    expect(
+      suggestNodeNames("残業", ["残業時間", "残高", "疲労", "業務量"]),
+    ).toEqual(["残業時間", "残高"]);
+  });
+
+  it("同名（正規化後一致）と遠い名前は返さない", () => {
+    expect(suggestNodeNames("疲労", ["疲労", "顧客満足度"])).toEqual([]);
+  });
+
+  it("全角半角・大文字小文字のゆれを越えて照合する", () => {
+    expect(suggestNodeNames("ｋｐｉ達成", ["KPI達成率", "売上"])).toEqual([
+      "KPI達成率",
+    ]);
   });
 });
 
@@ -108,6 +127,65 @@ describe("planDiagramMutation", () => {
     if (!result.ok) return;
     expect(result.plan.createEdges).toHaveLength(0);
     expect(result.plan.warnings).toHaveLength(1);
+    expect(result.plan.warnings[0]).toMatchObject({
+      code: "unresolved-edge",
+      target: "存在しない変数→生産性",
+    });
+    expect(result.plan.warnings[0].message).toContain("存在しない変数");
+  });
+
+  it("unresolved-edge の warning には近い既存変数名が suggestion として付く", () => {
+    const result = planDiagramMutation(
+      diagram,
+      diff({
+        upsertEdges: [
+          { source: "残業", target: "疲労", polarity: "+", rationale: "x" },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    // 有効操作ゼロでも warnings は構造のまま返る
+    expect(result.warnings).toEqual([
+      expect.objectContaining({
+        code: "unresolved-edge",
+        target: "残業→疲労",
+        suggestion: ["残業時間"],
+      }),
+    ]);
+    expect(result.reason).toContain("残業→疲労");
+  });
+
+  it("同一 diff で作る新規ノードも suggestion の候補になる", () => {
+    const result = planDiagramMutation(
+      emptyDiagram,
+      diff({
+        upsertNodes: [{ name: "生産性" }],
+        upsertEdges: [
+          { source: "生産", target: "生産性", polarity: "+", rationale: "x" },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.warnings[0]).toMatchObject({
+      code: "unresolved-edge",
+      suggestion: ["生産性"],
+    });
+  });
+
+  it("削除対象が無い変数にも suggestion が付く", () => {
+    const result = planDiagramMutation(
+      diagram,
+      diff({ upsertNodes: [{ name: "x" }], deleteNodes: ["疲れ"] }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.warnings[0]).toMatchObject({
+      code: "missing-node",
+      target: "疲れ",
+      suggestion: ["疲労"],
+    });
   });
 
   it("削除予定の変数へ張るエッジは除外される", () => {
@@ -266,7 +344,13 @@ describe("planDiagramMutation（SFD 化）", () => {
       kind: "flow",
       expression: null,
     });
-    expect(result.plan.warnings.some((w) => w.includes("式が無効"))).toBe(true);
+    expect(result.plan.warnings).toEqual([
+      expect.objectContaining({
+        code: "invalid-expression",
+        target: "疲労",
+        message: expect.stringContaining("式が無効"),
+      }),
+    ]);
   });
 
   it("kind 別に無関係な列は正規化で null 化される", () => {
@@ -303,6 +387,11 @@ describe("planDiagramMutation（SFD 化）", () => {
     );
     // 有効操作が無いので拒否（式は無視され、memo/unit/kind もない）
     expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.warnings[0]).toMatchObject({
+      code: "kind-missing",
+      target: "疲労",
+    });
   });
 
   it("kind:null で未分類へ戻すと 3 列とも null になる", () => {

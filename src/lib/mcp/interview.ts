@@ -65,7 +65,9 @@ export async function buildMcpInterviewPrompt(
     matches: matchArchetypes(loopResult.loops),
   };
   const guidance = deriveGuidance(project, diagram);
-  const prompt = buildInterviewSystemPrompt(diagram, verification, guidance);
+  const prompt = buildInterviewSystemPrompt(diagram, verification, guidance, {
+    surface: "mcp",
+  });
   return `${prompt}
 
 ## このセッションでの図の操作

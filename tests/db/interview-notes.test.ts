@@ -65,4 +65,50 @@ describe("saveInterviewNotes", () => {
     expect(restored.variableCandidates).toHaveLength(MAX_VARIABLE_CANDIDATES);
     expect(restored.variableCandidates[0]?.name).toBe("変数0");
   });
+
+  it("append モードは既存とマージして保存し、cap で落ちた件数を返す", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    await saveInterviewNotes(project.id, {
+      theme: "残業が減らない",
+      behavior: null,
+      idealBehavior: null,
+      stakeholders: [{ name: "自分", concerns: ["睡眠"] }],
+      variableCandidates: [{ name: "残業時間", source: "自分" }],
+      confirmedLoopIds: [],
+    });
+
+    const result = await saveInterviewNotes(
+      project.id,
+      {
+        theme: null,
+        behavior: { pattern: "increasing", description: "増え続けている" },
+        idealBehavior: null,
+        stakeholders: [{ name: "上司", concerns: ["納期"] }],
+        variableCandidates: Array.from(
+          { length: MAX_VARIABLE_CANDIDATES },
+          (_, i) => ({ name: `候補${i}`, source: null }),
+        ),
+        confirmedLoopIds: ["loop:x"],
+      },
+      { mode: "append" },
+    );
+    // テーマは非 null を渡していないので残る
+    expect(result.notes.theme).toBe("残業が減らない");
+    expect(result.notes.behavior?.pattern).toBe("increasing");
+    expect(result.notes.stakeholders.map((s) => s.name)).toEqual([
+      "自分",
+      "上司",
+    ]);
+    // 既存 1 件 + 新規 15 件 = 16 件 → 1 件落ちる
+    expect(result.dropped).toEqual({ stakeholders: 0, variableCandidates: 1 });
+    expect(result.notes.variableCandidates).toHaveLength(
+      MAX_VARIABLE_CANDIDATES,
+    );
+    expect(result.notes.variableCandidates[0].name).toBe("残業時間");
+    expect(result.notes.confirmedLoopIds).toEqual(["loop:x"]);
+
+    const restored = parseInterviewNotes(await loadNotesRow(project.id));
+    expect(restored).toEqual(result.notes);
+  });
 });

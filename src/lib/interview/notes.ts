@@ -9,10 +9,11 @@ import { z } from "zod";
 
 /**
  * 保持件数の上限。プロンプト表示と保存の両方で同じ値を使う。
- * updateNotes は全置換方式のため、モデルはプロンプトに表示されたノートを
- * 元に次のペイロードを再構成する。表示だけ打ち切ると超過分が置換のたびに
- * 静かに消えるので、「表示 = モデルが echo する全件 = 保存件数」を一致させ、
- * 上限超過分は仕様として保持しない。
+ * チャットの updateNotes は全置換方式のため、モデルはプロンプトに表示された
+ * ノートを元に次のペイロードを再構成する。表示だけ打ち切ると超過分が置換の
+ * たびに静かに消えるので、「表示 = モデルが echo する全件 = 保存件数」を
+ * 一致させ、上限超過分は仕様として保持しない。落ちた件数は countCapDropped
+ * で数えて応答に載せる（MCP の update_notes）。
  */
 export const MAX_STAKEHOLDERS = 8;
 export const MAX_VARIABLE_CANDIDATES = 15;
@@ -105,6 +106,94 @@ export function capInterviewNotes(notes: InterviewNotes): InterviewNotes {
     variableCandidates: notes.variableCandidates.slice(
       0,
       MAX_VARIABLE_CANDIDATES,
+    ),
+  };
+}
+
+/** cap で落ちる件数（保存前に数えて応答へ載せる） */
+export function countCapDropped(notes: InterviewNotes) {
+  return {
+    stakeholders: Math.max(0, notes.stakeholders.length - MAX_STAKEHOLDERS),
+    variableCandidates: Math.max(
+      0,
+      notes.variableCandidates.length - MAX_VARIABLE_CANDIDATES,
+    ),
+  };
+}
+
+/** 配列要素の照合キー（表記ゆれを吸収） */
+function mergeKey(name: string) {
+  return name.trim().normalize("NFKC").toLowerCase();
+}
+
+/** 重複を除いて後ろへ足す（先勝ち、順序維持） */
+function unionBy<T>(base: T[], patch: T[], key: (item: T) => string): T[] {
+  const out = [...base];
+  const seen = new Set(base.map(key));
+  for (const item of patch) {
+    const k = key(item);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(item);
+  }
+  return out;
+}
+
+/**
+ * append モードのマージ。スカラー（theme / behavior / idealBehavior）は
+ * patch が非 null のときだけ上書きし、配列は union にする。
+ * stakeholders は同名なら concerns を union、variableCandidates は同名なら
+ * 既存を保持（source は既存が null のときだけ補う）。cap はここでは適用しない
+ */
+export function mergeInterviewNotes(
+  base: InterviewNotes,
+  patch: InterviewNotes,
+): InterviewNotes {
+  const stakeholders = base.stakeholders.map((s) => ({
+    ...s,
+    concerns: [...s.concerns],
+  }));
+  const stakeholderByKey = new Map(
+    stakeholders.map((s) => [mergeKey(s.name), s]),
+  );
+  for (const s of patch.stakeholders) {
+    const existing = stakeholderByKey.get(mergeKey(s.name));
+    if (existing) {
+      existing.concerns = unionBy(existing.concerns, s.concerns, mergeKey);
+    } else {
+      const added = { ...s, concerns: [...s.concerns] };
+      stakeholders.push(added);
+      stakeholderByKey.set(mergeKey(s.name), added);
+    }
+  }
+
+  const variableCandidates = base.variableCandidates.map((v) => ({ ...v }));
+  const candidateByKey = new Map(
+    variableCandidates.map((v) => [mergeKey(v.name), v]),
+  );
+  for (const v of patch.variableCandidates) {
+    const existing = candidateByKey.get(mergeKey(v.name));
+    if (existing) {
+      if (existing.source === null && v.source !== null) {
+        existing.source = v.source;
+      }
+    } else {
+      const added = { ...v };
+      variableCandidates.push(added);
+      candidateByKey.set(mergeKey(v.name), added);
+    }
+  }
+
+  return {
+    theme: patch.theme ?? base.theme,
+    behavior: patch.behavior ?? base.behavior,
+    idealBehavior: patch.idealBehavior ?? base.idealBehavior,
+    stakeholders,
+    variableCandidates,
+    confirmedLoopIds: unionBy(
+      base.confirmedLoopIds,
+      patch.confirmedLoopIds,
+      (id) => id,
     ),
   };
 }

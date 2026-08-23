@@ -46,17 +46,90 @@ export type MutationPlan = {
     rationale: string;
   }[];
   deleteEdgeIds: string[];
-  /** 不整合のため除外した操作の説明（AI へのフィードバックに使う） */
-  warnings: string[];
+  /** 不整合のため除外・縮退した操作（AI へのフィードバックに使う） */
+  warnings: MutationWarning[];
+};
+
+export type MutationWarningCode =
+  /** 参照先の変数がないリンク（除外） */
+  | "unresolved-edge"
+  /** flow / auxiliary の式が無効（式だけ null で保存） */
+  | "invalid-expression"
+  /** kind 指定なしで式/初期値/定数値が来た（SFD 列を無視） */
+  | "kind-missing"
+  /** diff 内で同名の upsertNodes が重複（2 つ目以降を無視） */
+  | "duplicate-node"
+  /** 同じ変数が upsertNodes と deleteNodes の両方にある（削除を無視） */
+  | "delete-conflict"
+  /** 削除対象の変数が存在しない */
+  | "missing-node"
+  /** 削除対象のリンクが存在しない */
+  | "missing-edge";
+
+/**
+ * 構造化した warning。message は人間/AI 向けの日本語文で、
+ * code / target は機械的な分岐と再送に使う。
+ * suggestion は修正候補（unresolved-edge なら近い既存変数名）
+ */
+export type MutationWarning = {
+  code: MutationWarningCode;
+  /** 対象の変数名、またはリンクなら "source→target" */
+  target: string;
+  message: string;
+  suggestion?: string[];
 };
 
 export type PlanResult =
   | { ok: true; plan: MutationPlan }
-  | { ok: false; reason: string };
+  | { ok: false; reason: string; warnings: MutationWarning[] };
 
 /** 表記ゆれを吸収する名前の正規化（照合キー用。保存する名前は原文のまま） */
 export function normalizeName(name: string) {
   return name.trim().normalize("NFKC").toLowerCase();
+}
+
+/** 修正候補として返す近傍名の最大数 */
+const MAX_SUGGESTIONS = 3;
+
+/** 2 文字列のレーベンシュタイン距離（短い変数名向けの素朴な実装） */
+function editDistance(a: string, b: string) {
+  const ac = Array.from(a);
+  const bc = Array.from(b);
+  let prev = Array.from({ length: bc.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= ac.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= bc.length; j++) {
+      const cost = ac[i - 1] === bc[j - 1] ? 0 : 1;
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+    }
+    prev = cur;
+  }
+  return prev[bc.length];
+}
+
+/**
+ * 未解決の変数名に近い既存名を返す（正規化後に部分一致、または編集距離が
+ * 名前長の 1/2 以下）。近い順に最大 MAX_SUGGESTIONS 件
+ */
+export function suggestNodeNames(name: string, candidates: string[]) {
+  const key = normalizeName(name);
+  if (!key) return [];
+  const scored: { name: string; score: number }[] = [];
+  for (const candidate of candidates) {
+    const ck = normalizeName(candidate);
+    if (ck === key) continue;
+    if (ck.includes(key) || key.includes(ck)) {
+      scored.push({ name: candidate, score: 0 });
+      continue;
+    }
+    const distance = editDistance(key, ck);
+    const limit = Math.floor(Math.max(key.length, ck.length) / 2);
+    if (distance <= limit) scored.push({ name: candidate, score: distance });
+  }
+  return scored
+    .sort((a, b) => a.score - b.score)
+    .slice(0, MAX_SUGGESTIONS)
+    .map((s) => s.name);
 }
 
 /**
@@ -69,9 +142,9 @@ export function normalizeName(name: string) {
  */
 function normalizeSfdFields(node: DiagramDiff["upsertNodes"][number]): {
   columns: SfdColumns | null;
-  warnings: string[];
+  warnings: MutationWarning[];
 } {
-  const warnings: string[] = [];
+  const warnings: MutationWarning[] = [];
 
   if (node.kind === undefined) {
     if (
@@ -79,9 +152,12 @@ function normalizeSfdFields(node: DiagramDiff["upsertNodes"][number]): {
       node.initialValue !== undefined ||
       node.value !== undefined
     ) {
-      warnings.push(
-        `変数「${node.name}」に役割（kind）の指定がないため、式/初期値/定数値は無視しました`,
-      );
+      warnings.push({
+        code: "kind-missing",
+        target: node.name,
+        message: `変数「${node.name}」に役割（kind）の指定がないため、式/初期値/定数値は無視しました`,
+        suggestion: ["kind に stock / flow / auxiliary / constant を指定する"],
+      });
     }
     return { columns: null, warnings };
   }
@@ -126,9 +202,12 @@ function normalizeSfdFields(node: DiagramDiff["upsertNodes"][number]): {
   if (expression) {
     const err = validateExpressionStructure(expression);
     if (err) {
-      warnings.push(
-        `「${node.name}」の式が無効なため保存しませんでした: ${err.message}`,
-      );
+      warnings.push({
+        code: "invalid-expression",
+        target: node.name,
+        message: `「${node.name}」の式が無効なため保存しませんでした: ${err.message}`,
+        suggestion: ["式は四則演算と既存の変数名のみで書き直す"],
+      });
       expression = null;
     }
   }
@@ -148,7 +227,7 @@ export function planDiagramMutation(
   current: CurrentDiagram,
   diff: DiagramDiff,
 ): PlanResult {
-  const warnings: string[] = [];
+  const warnings: MutationWarning[] = [];
 
   const nodesByKey = new Map(
     current.nodes.map((n) => [normalizeName(n.name), n]),
@@ -164,7 +243,11 @@ export function planDiagramMutation(
   for (const node of diff.upsertNodes) {
     const key = normalizeName(node.name);
     if (seenUpsertKeys.has(key)) {
-      warnings.push(`変数「${node.name}」が diff 内で重複しています（統合）`);
+      warnings.push({
+        code: "duplicate-node",
+        target: node.name,
+        message: `変数「${node.name}」が diff 内で重複しています（統合）`,
+      });
       continue;
     }
     seenUpsertKeys.add(key);
@@ -198,12 +281,25 @@ export function planDiagramMutation(
   for (const name of diff.deleteNodes) {
     const key = normalizeName(name);
     if (seenUpsertKeys.has(key)) {
-      warnings.push(`変数「${name}」は追加と削除が同時指定のため削除を無視`);
+      warnings.push({
+        code: "delete-conflict",
+        target: name,
+        message: `変数「${name}」は追加と削除が同時指定のため削除を無視`,
+      });
       continue;
     }
     const existing = nodesByKey.get(key);
     if (!existing) {
-      warnings.push(`削除対象の変数「${name}」は存在しません`);
+      const suggestion = suggestNodeNames(
+        name,
+        current.nodes.map((n) => n.name),
+      );
+      warnings.push({
+        code: "missing-node",
+        target: name,
+        message: `削除対象の変数「${name}」は存在しません`,
+        ...(suggestion.length > 0 ? { suggestion } : {}),
+      });
       continue;
     }
     deleteNodeIds.push(existing.id);
@@ -218,6 +314,7 @@ export function planDiagramMutation(
       ok: false,
       reason:
         "図のすべての変数を削除する操作は受け付けません。残す構造を明確にしてください",
+      warnings,
     };
   }
 
@@ -230,6 +327,13 @@ export function planDiagramMutation(
       .map((n) => normalizeName(n.name)),
     ...createNodes.map((n) => normalizeName(n.name)),
   ]);
+
+  const resolvableNames = [
+    ...current.nodes
+      .filter((n) => !deletedKeys.has(normalizeName(n.name)))
+      .map((n) => n.name),
+    ...createNodes.map((n) => n.name),
+  ];
 
   const edgeByPairKey = new Map<string, CurrentEdge>(
     current.edges.map((e) => {
@@ -249,9 +353,20 @@ export function planDiagramMutation(
     const sourceKey = normalizeName(edge.source);
     const targetKey = normalizeName(edge.target);
     if (!resolvableKeys.has(sourceKey) || !resolvableKeys.has(targetKey)) {
-      warnings.push(
-        `リンク「${edge.source}→${edge.target}」は参照先の変数がないため除外`,
+      const unresolved = [edge.source, edge.target].filter(
+        (name) => !resolvableKeys.has(normalizeName(name)),
       );
+      const suggestion = unresolved.flatMap((name) =>
+        suggestNodeNames(name, resolvableNames),
+      );
+      warnings.push({
+        code: "unresolved-edge",
+        target: `${edge.source}→${edge.target}`,
+        message: `リンク「${edge.source}→${edge.target}」は参照先の変数「${unresolved.join("」「")}」がないため除外`,
+        ...(suggestion.length > 0
+          ? { suggestion: [...new Set(suggestion)] }
+          : {}),
+      });
       continue;
     }
     const existing = edgeByPairKey.get(`${sourceKey}→${targetKey}`);
@@ -278,9 +393,11 @@ export function planDiagramMutation(
     const pairKey = `${normalizeName(edge.source)}→${normalizeName(edge.target)}`;
     const existing = edgeByPairKey.get(pairKey);
     if (!existing) {
-      warnings.push(
-        `削除対象のリンク「${edge.source}→${edge.target}」は存在しません`,
-      );
+      warnings.push({
+        code: "missing-edge",
+        target: `${edge.source}→${edge.target}`,
+        message: `削除対象のリンク「${edge.source}→${edge.target}」は存在しません`,
+      });
       continue;
     }
     deleteEdgeIds.push(existing.id);
@@ -300,8 +417,9 @@ export function planDiagramMutation(
       ok: false,
       reason:
         warnings.length > 0
-          ? `有効な操作がありません: ${warnings.join(" / ")}`
+          ? `有効な操作がありません: ${warnings.map((w) => w.message).join(" / ")}`
           : "diff に操作が含まれていません",
+      warnings,
     };
   }
 
