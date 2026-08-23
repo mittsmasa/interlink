@@ -1,9 +1,19 @@
 "use client";
 
-import { CaretDownIcon, CompassIcon, WarningIcon } from "@phosphor-icons/react";
+import {
+  CaretDownIcon,
+  CompassIcon,
+  CrosshairIcon,
+  WarningIcon,
+} from "@phosphor-icons/react";
 import type { ArchetypeMatch } from "@/lib/diagram/archetypes";
 import type { LintFinding } from "@/lib/diagram/lint";
 import type { Loop, LoopDetectionResult } from "@/lib/diagram/loops";
+import {
+  describeCandidate,
+  type InterventionCandidate,
+  MAX_INTERVENTION_CANDIDATES,
+} from "@/lib/diagram/metrics";
 import { cn } from "@/lib/utils";
 import { LoopPolarityIcon, loopColor } from "./loop-badges";
 
@@ -11,23 +21,28 @@ type VerificationPanelProps = {
   loopResult: LoopDetectionResult;
   findings: LintFinding[];
   matches: ArchetypeMatch[];
+  /** 複数ループの交点（介入候補）。metrics.ts で導出 */
+  candidates: InterventionCandidate[];
   open: boolean;
   onToggle: () => void;
   onHighlightLoop: (loop: Loop | null) => void;
+  onHighlightCandidate: (candidate: InterventionCandidate | null) => void;
   onSelectFinding: (finding: LintFinding) => void;
 };
 
 /**
- * 図の構造検証（ループ / lint / 原型）をまとめて見せるパネル。
+ * 図の構造検証（ループ / 介入候補 / lint / 原型）をまとめて見せるパネル。
  * キャンバス左上に折りたたみで置く（inspector は右上）。
  */
 export function VerificationPanel({
   loopResult,
   findings,
   matches,
+  candidates,
   open,
   onToggle,
   onHighlightLoop,
+  onHighlightCandidate,
   onSelectFinding,
 }: VerificationPanelProps) {
   const { loops, truncated } = loopResult;
@@ -110,6 +125,43 @@ export function VerificationPanel({
               </>
             )}
           </section>
+
+          {candidates.length > 0 && (
+            <section>
+              <h2 className="mb-2 font-serif text-muted-foreground text-xs tracking-wide">
+                介入候補
+              </h2>
+              <ul className="space-y-1">
+                {candidates
+                  .slice(0, MAX_INTERVENTION_CANDIDATES)
+                  .map((candidate) => (
+                    <li key={candidate.nodeId}>
+                      <button
+                        type="button"
+                        className="flex w-full items-start gap-2 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-accent"
+                        onMouseEnter={() => onHighlightCandidate(candidate)}
+                        onMouseLeave={() => onHighlightCandidate(null)}
+                        onFocus={() => onHighlightCandidate(candidate)}
+                        onBlur={() => onHighlightCandidate(null)}
+                      >
+                        <CrosshairIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+                        <span className="text-xs leading-relaxed">
+                          <span className="font-serif text-sm">
+                            {candidate.name}
+                          </span>
+                          <span className="ml-1.5 text-muted-foreground">
+                            {describeCandidate(candidate)}
+                          </span>
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+              </ul>
+              <p className="mt-2 text-muted-foreground text-xs leading-relaxed">
+                複数のループが交わる変数です。ここに手を入れると全体に波及しやすい。
+              </p>
+            </section>
+          )}
 
           {findings.length > 0 && (
             <section>

@@ -30,6 +30,9 @@ describe("saveInterviewNotes", () => {
       stakeholders: [{ name: "自分", concerns: ["睡眠を確保したい"] }],
       variableCandidates: [{ name: "残業時間", source: "自分" }],
       confirmedLoopIds: [],
+      timeHorizon: null,
+      variableBehaviors: [],
+      hypotheses: [],
     };
 
     const result = await saveInterviewNotes(project.id, notes);
@@ -55,6 +58,9 @@ describe("saveInterviewNotes", () => {
         (_, i) => ({ name: `変数${i}`, source: null }),
       ),
       confirmedLoopIds: [],
+      timeHorizon: null,
+      variableBehaviors: [],
+      hypotheses: [],
     };
 
     const result = await saveInterviewNotes(project.id, notes);
@@ -76,6 +82,9 @@ describe("saveInterviewNotes", () => {
       stakeholders: [{ name: "自分", concerns: ["睡眠"] }],
       variableCandidates: [{ name: "残業時間", source: "自分" }],
       confirmedLoopIds: [],
+      timeHorizon: null,
+      variableBehaviors: [],
+      hypotheses: [],
     });
 
     const result = await saveInterviewNotes(
@@ -90,6 +99,9 @@ describe("saveInterviewNotes", () => {
           (_, i) => ({ name: `候補${i}`, source: null }),
         ),
         confirmedLoopIds: ["loop:x"],
+        timeHorizon: null,
+        variableBehaviors: [],
+        hypotheses: [],
       },
       { mode: "append" },
     );
@@ -101,7 +113,12 @@ describe("saveInterviewNotes", () => {
       "上司",
     ]);
     // 既存 1 件 + 新規 15 件 = 16 件 → 1 件落ちる
-    expect(result.dropped).toEqual({ stakeholders: 0, variableCandidates: 1 });
+    expect(result.dropped).toEqual({
+      stakeholders: 0,
+      variableCandidates: 1,
+      variableBehaviors: 0,
+      hypotheses: 0,
+    });
     expect(result.notes.variableCandidates).toHaveLength(
       MAX_VARIABLE_CANDIDATES,
     );

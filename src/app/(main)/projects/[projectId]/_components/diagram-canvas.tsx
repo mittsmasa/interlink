@@ -26,6 +26,10 @@ import {
   toDerivedLoopEdges,
 } from "@/lib/diagram/loop-edges";
 import { detectLoops, type Loop } from "@/lib/diagram/loops";
+import {
+  computeDiagramMetrics,
+  type InterventionCandidate,
+} from "@/lib/diagram/metrics";
 import type { Diagram, DiagramEdge, DiagramNode } from "@/lib/queries/diagrams";
 import {
   createEdge,
@@ -118,8 +122,8 @@ function DiagramCanvasInner({
     [signedDeps],
   );
 
-  // ループ・lint・原型は図から毎回導出する（保存しない）。ループ検出には因果エッジに加えて
-  // 式由来リンクも derived エッジとして渡し、式で閉じる円環を暫定ループとして拾う
+  // ループ・lint・原型・構造指標は図から毎回導出する（保存しない）。ループ検出には因果エッジに
+  // 加えて式由来リンクも derived エッジとして渡し、式で閉じる円環を暫定ループとして拾う
   const verification = useMemo(() => {
     const loopEdges = [...diagram.edges, ...derivedLoopEdges];
     const loopResult = detectLoops(diagram.nodes, loopEdges);
@@ -130,6 +134,11 @@ function DiagramCanvasInner({
         confirmedLoopIds,
       }),
       matches: matchArchetypes(loopResult.loops),
+      metrics: computeDiagramMetrics(
+        diagram.nodes,
+        loopEdges,
+        loopResult.loops,
+      ),
     };
   }, [diagram, derivedLoopEdges, confirmedLoopIds]);
 
@@ -141,6 +150,26 @@ function DiagramCanvasInner({
         : null,
     );
   }, []);
+
+  // 介入候補のホバーでは、その変数と交差している全ループを一緒に光らせる
+  const highlightCandidate = useCallback(
+    (candidate: InterventionCandidate | null) => {
+      if (!candidate) {
+        setHighlight(null);
+        return;
+      }
+      const ids = new Set(candidate.loopIds);
+      const nodeIds = new Set([candidate.nodeId]);
+      const edgeIds = new Set<string>();
+      for (const loop of verification.loopResult.loops) {
+        if (!ids.has(loop.id)) continue;
+        for (const id of loop.nodeIds) nodeIds.add(id);
+        for (const id of loop.edgeIds) edgeIds.add(id);
+      }
+      setHighlight({ nodeIds, edgeIds });
+    },
+    [verification.loopResult.loops],
+  );
 
   const selectFinding = useCallback(
     (finding: LintFinding) => {
@@ -402,11 +431,13 @@ function DiagramCanvasInner({
           loopResult={verification.loopResult}
           findings={verification.findings}
           matches={verification.matches}
+          candidates={verification.metrics.interventionCandidates}
           open={openPanel === "verification"}
           onToggle={() =>
             setOpenPanel((p) => (p === "verification" ? null : "verification"))
           }
           onHighlightLoop={highlightLoop}
+          onHighlightCandidate={highlightCandidate}
           onSelectFinding={selectFinding}
         />
       )}

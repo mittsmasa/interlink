@@ -167,6 +167,18 @@ describe("buildInterviewSystemPrompt", () => {
     expect(prompt).toContain("実感と合いますか");
   });
 
+  it("インサイトフェーズでは介入仮説の進め方を含む", () => {
+    const prompt = buildInterviewSystemPrompt(
+      { nodes: [], edges: [] },
+      emptyVerification,
+      { ...emptyGuidance, phase: "insight" },
+    );
+    expect(prompt).toContain("## いまのフェーズ: インサイト");
+    expect(prompt).toContain("4. インサイト");
+    expect(prompt).toContain("## インサイトの進め方");
+    expect(prompt).toContain("hypotheses");
+  });
+
   it("アジェンダがあれば優先順で並び、なければ節ごと出さない", () => {
     const withAgenda = buildInterviewSystemPrompt(
       { nodes: [], edges: [] },
@@ -220,10 +232,38 @@ describe("formatNotesForPrompt", () => {
       stakeholders: [{ name: "上司", concerns: ["納期を守りたい"] }],
       variableCandidates: [{ name: "残業時間", source: "自分" }],
       confirmedLoopIds: [],
+      timeHorizon: null,
+      variableBehaviors: [],
+      hypotheses: [],
     });
     expect(text).toContain("増え続けている — 半年前から悪化");
     expect(text).toContain("- 上司: 納期を守りたい");
     expect(text).toContain("- 残業時間（出所: 自分）");
+    expect(text).toContain("- 時間軸: （未記録）");
+    expect(text).not.toContain("介入仮説");
+  });
+
+  it("時間軸・変数ごとの挙動・介入仮説が記入されていれば一覧に出る", () => {
+    const text = formatNotesForPrompt({
+      ...emptyInterviewNotes(),
+      timeHorizon: { from: "半年前", to: "現在", unit: "月" },
+      variableBehaviors: [
+        { name: "疲労", pattern: "oscillating", description: "波がある" },
+      ],
+      hypotheses: [
+        {
+          leveragePoint: "休息",
+          expectedEffect: "疲労の波が収まる",
+          loopIds: ["loop:b→d"],
+          status: "tested",
+        },
+      ],
+    });
+    expect(text).toContain("- 時間軸: 半年前 〜 現在（単位: 月）");
+    expect(text).toContain("  - 疲労: 振動している — 波がある");
+    expect(text).toContain(
+      "  - [検証済み] 休息 → 疲労の波が収まる（tested、loops: loop:b→d）",
+    );
   });
 
   it("surface で UI 参照の文言を切り替える（既定は chat）", () => {

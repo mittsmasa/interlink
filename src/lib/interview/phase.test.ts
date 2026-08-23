@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Loop } from "@/lib/diagram/loops";
 import { emptyInterviewNotes, type InterviewNotes } from "./notes";
-import { deriveInterviewPhase } from "./phase";
+import { deriveInterviewPhase, isReadyForInsight } from "./phase";
 
 const loop: Loop = {
   id: "loop:a→b",
@@ -65,5 +65,63 @@ describe("deriveInterviewPhase", () => {
       loops: [loop],
     };
     expect(deriveInterviewPhase(emptyInterviewNotes(), diagram)).toBe("refine");
+  });
+
+  describe("insight", () => {
+    const bLoop: Loop = {
+      ...loop,
+      id: "loop:b→c",
+      label: "B1",
+      polarity: "B",
+    };
+    const both = {
+      nodes: [{ name: "a" }],
+      edges: [{}, {}],
+      loops: [loop, bLoop],
+    };
+
+    it("R と B が各 1 つ以上 confirmed ならインサイト（insight）", () => {
+      const notes = notesWith({ confirmedLoopIds: [loop.id, bLoop.id] });
+      expect(deriveInterviewPhase(notes, both)).toBe("insight");
+    });
+
+    it("R だけ（または B だけ）の確認ではすり合わせのまま", () => {
+      expect(
+        deriveInterviewPhase(notesWith({ confirmedLoopIds: [loop.id] }), both),
+      ).toBe("refine");
+      expect(
+        deriveInterviewPhase(notesWith({ confirmedLoopIds: [bLoop.id] }), both),
+      ).toBe("refine");
+    });
+
+    it("図から消えたループの ID は確認済みに数えない", () => {
+      const notes = notesWith({ confirmedLoopIds: [loop.id, "loop:gone"] });
+      expect(deriveInterviewPhase(notes, both)).toBe("refine");
+    });
+
+    it("status 付きエッジがあるときは confirmed 率が閾値未満なら insight に入らない", () => {
+      const notes = notesWith({ confirmedLoopIds: [loop.id, bLoop.id] });
+      const lowRatio = {
+        ...both,
+        edges: [
+          { status: "confirmed" },
+          { status: "inferred" },
+          { status: "inferred" },
+        ],
+      };
+      expect(isReadyForInsight(notes, lowRatio)).toBe(false);
+      expect(deriveInterviewPhase(notes, lowRatio)).toBe("refine");
+      const highRatio = {
+        ...both,
+        edges: [{ status: "confirmed" }, { status: "inferred" }],
+      };
+      expect(deriveInterviewPhase(notes, highRatio)).toBe("insight");
+    });
+
+    it("status を持つエッジが 1 本も無ければ（列未導入）ループの確認だけで判定する", () => {
+      const notes = notesWith({ confirmedLoopIds: [loop.id, bLoop.id] });
+      const noStatus = { ...both, edges: [{}, { status: null }] };
+      expect(isReadyForInsight(notes, noStatus)).toBe(true);
+    });
   });
 });
