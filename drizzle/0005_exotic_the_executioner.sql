@@ -1,0 +1,1 @@
+ALTER TABLE `edges` ADD `status` text DEFAULT 'inferred' NOT NULL;

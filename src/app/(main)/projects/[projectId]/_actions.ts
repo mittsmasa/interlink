@@ -4,6 +4,7 @@ import { and, eq, ne } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
 import {
+  type EdgeStatus,
   edges,
   type NodeKind,
   nodes,
@@ -165,7 +166,12 @@ export async function deleteNode(projectId: string, nodeId: string) {
 export async function updateEdge(
   projectId: string,
   edgeId: string,
-  input: { polarity: Polarity; hasDelay: boolean; rationale: string },
+  input: {
+    polarity: Polarity;
+    hasDelay: boolean;
+    rationale: string;
+    status: EdgeStatus;
+  },
 ) {
   const project = await getOwnedProject(projectId);
   if (!project) return { ok: false as const };
@@ -175,6 +181,7 @@ export async function updateEdge(
       polarity: input.polarity,
       hasDelay: input.hasDelay,
       rationale: input.rationale.trim(),
+      status: input.status,
     })
     .where(and(eq(edges.id, edgeId), eq(edges.projectId, projectId)));
   await touchProject(projectId);

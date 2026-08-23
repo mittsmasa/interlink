@@ -131,7 +131,11 @@ export function Workspace({
         />
       )}
       <section className="relative min-h-0 flex-1" aria-label="因果ループ図">
-        <DiagramCanvas projectId={project.id} diagram={diagram} />
+        <DiagramCanvas
+          projectId={project.id}
+          diagram={diagram}
+          confirmedLoopIds={notes.confirmedLoopIds}
+        />
         {/* 対話の開閉つまみ。キャンバス左端の垂直中央は、構造 / シミュレーション /
             ツールバー / Controls のどれとも重ならない唯一の位置。縦横どちらの分割でも
             同じ場所に付くため、向きを含意しない SidebarSimple を使う */}

@@ -50,6 +50,8 @@ const edgeTypes = { causal: CausalEdge, dependency: DependencyEdge };
 type DiagramCanvasProps = {
   projectId: string;
   diagram: Diagram;
+  /** ユーザーが実感で確かめたループ ID（lint の speculative-link 判定に使う） */
+  confirmedLoopIds: string[];
 };
 
 export function DiagramCanvas(props: DiagramCanvasProps) {
@@ -60,7 +62,11 @@ export function DiagramCanvas(props: DiagramCanvasProps) {
   );
 }
 
-function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
+function DiagramCanvasInner({
+  projectId,
+  diagram,
+  confirmedLoopIds,
+}: DiagramCanvasProps) {
   const { fitView, screenToFlowPosition } = useReactFlow();
   const { resolvedTheme } = useTheme();
   // resolvedTheme は SSR では不明（常に light 扱い）のため、そのまま使うと
@@ -119,10 +125,13 @@ function DiagramCanvasInner({ projectId, diagram }: DiagramCanvasProps) {
     const loopResult = detectLoops(diagram.nodes, loopEdges);
     return {
       loopResult,
-      findings: lintDiagram(diagram.nodes, diagram.edges),
+      findings: lintDiagram(diagram.nodes, diagram.edges, {
+        loops: loopResult.loops,
+        confirmedLoopIds,
+      }),
       matches: matchArchetypes(loopResult.loops),
     };
-  }, [diagram, derivedLoopEdges]);
+  }, [diagram, derivedLoopEdges, confirmedLoopIds]);
 
   const [highlight, setHighlight] = useState<Highlight>(null);
   const highlightLoop = useCallback((loop: Loop | null) => {

@@ -1,10 +1,18 @@
 import { describe, expect, it } from "vitest";
+import type { EdgeStatus } from "@/db/schema";
 import { lintDiagram } from "./lint";
+import type { Loop } from "./loops";
 
-const edge = (id: string, sourceNodeId: string, targetNodeId: string) => ({
+const edge = (
+  id: string,
+  sourceNodeId: string,
+  targetNodeId: string,
+  status?: EdgeStatus,
+) => ({
   id,
   sourceNodeId,
   targetNodeId,
+  ...(status ? { status } : {}),
 });
 
 describe("lintDiagram", () => {
@@ -13,8 +21,9 @@ describe("lintDiagram", () => {
       [
         { id: "a", name: "残業時間" },
         { id: "b", name: "疲労" },
+        { id: "c", name: "作業効率" },
       ],
-      [edge("e1", "a", "b"), edge("e2", "b", "a")],
+      [edge("e1", "a", "b"), edge("e2", "b", "c"), edge("e3", "c", "a")],
     );
     expect(findings).toEqual([]);
   });
@@ -131,6 +140,89 @@ describe("lintDiagram", () => {
       expect(
         findings.filter((f) => f.rule === "missing-dependency-link"),
       ).toHaveLength(0);
+    });
+  });
+
+  describe("bidirectional-link", () => {
+    it("A→B と B→A が両方あれば 1 件の info にまとめ、両エッジを指す", () => {
+      const findings = lintDiagram(
+        [
+          { id: "a", name: "残業時間" },
+          { id: "b", name: "疲労" },
+        ],
+        [edge("e1", "a", "b"), edge("e2", "b", "a")],
+      );
+      expect(findings).toHaveLength(1);
+      expect(findings[0]).toMatchObject({
+        rule: "bidirectional-link",
+        severity: "info",
+        nodeIds: ["a", "b"],
+        edgeIds: ["e1", "e2"],
+      });
+      expect(findings[0].message).toContain("どちらが先に動きますか");
+      expect(findings[0].message).toContain("間に挟まる変数");
+    });
+
+    it("自己ループは双方向とみなさない", () => {
+      const findings = lintDiagram(
+        [{ id: "a", name: "残業時間" }],
+        [edge("e1", "a", "a")],
+      );
+      expect(findings).toEqual([]);
+    });
+  });
+
+  describe("speculative-link", () => {
+    const nodes = [
+      { id: "a", name: "残業時間" },
+      { id: "b", name: "疲労" },
+      { id: "c", name: "作業効率" },
+    ];
+    const edges = [
+      edge("e1", "a", "b", "inferred"),
+      edge("e2", "b", "c", "inferred"),
+      edge("e3", "c", "a", "confirmed"),
+      // ループ外の推測リンク
+      edge("e4", "a", "c", "inferred"),
+    ];
+    const loop: Loop = {
+      id: "loop:a→b→c",
+      label: "R1",
+      nodeIds: ["a", "b", "c"],
+      nodeNames: ["残業時間", "疲労", "作業効率"],
+      edgeIds: ["e1", "e2", "e3"],
+      polarity: "R",
+      hasDelay: false,
+    };
+
+    it("確認済みループの外にある inferred リンクだけを info にする", () => {
+      const findings = lintDiagram(nodes, edges, {
+        loops: [loop],
+        confirmedLoopIds: [loop.id],
+      });
+      const speculative = findings.filter((f) => f.rule === "speculative-link");
+      expect(speculative).toHaveLength(1);
+      expect(speculative[0]).toMatchObject({
+        severity: "info",
+        edgeIds: ["e4"],
+      });
+      expect(speculative[0].message).toContain("「残業時間→作業効率」");
+    });
+
+    it("確認済みループが 1 つもなければ出さない", () => {
+      const findings = lintDiagram(nodes, edges, {
+        loops: [loop],
+        confirmedLoopIds: [],
+      });
+      expect(findings.some((f) => f.rule === "speculative-link")).toBe(false);
+    });
+
+    it("status が未指定のエッジは対象にしない", () => {
+      const findings = lintDiagram(nodes, [edge("e4", "a", "c")], {
+        loops: [loop],
+        confirmedLoopIds: [loop.id],
+      });
+      expect(findings.some((f) => f.rule === "speculative-link")).toBe(false);
     });
   });
 });

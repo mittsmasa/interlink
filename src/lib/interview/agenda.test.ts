@@ -98,6 +98,74 @@ describe("buildInterviewAgenda", () => {
       );
     });
 
+    it("確認済みループ内の推測リンク本数と最弱リンク（disputed 優先）を問う", () => {
+      const loop = makeLoop({ edgeIds: ["e1", "e2"] });
+      const notes = notesWith({
+        theme: "x",
+        behavior: { pattern: "other", description: "-" },
+        confirmedLoopIds: [loop.id],
+      });
+      const diagram = {
+        nodes: [
+          { id: "a", name: "残業時間" },
+          { id: "b", name: "疲労" },
+        ],
+        edges: [
+          {
+            id: "e1",
+            sourceNodeId: "a",
+            targetNodeId: "b",
+            status: "inferred" as const,
+          },
+          {
+            id: "e2",
+            sourceNodeId: "b",
+            targetNodeId: "a",
+            status: "disputed" as const,
+          },
+        ],
+        loops: [loop],
+      };
+      const agenda = buildInterviewAgenda(notes, diagram, "refine");
+      const item = agenda.find((i) => i.includes("確認済みのループ R1"));
+      expect(item).toBeDefined();
+      expect(item).toContain("推測のままのリンクが 1 本");
+      expect(item).toContain("ユーザーが疑問視した「疲労→残業時間」");
+      expect(item).toContain("disputed");
+    });
+
+    it("確認済みループのリンクがすべて confirmed なら最弱リンク項目は出ない", () => {
+      const loop = makeLoop({ edgeIds: ["e1", "e2"] });
+      const notes = notesWith({
+        theme: "x",
+        behavior: { pattern: "other", description: "-" },
+        confirmedLoopIds: [loop.id],
+      });
+      const diagram = {
+        nodes: [
+          { id: "a", name: "残業時間" },
+          { id: "b", name: "疲労" },
+        ],
+        edges: [
+          {
+            id: "e1",
+            sourceNodeId: "a",
+            targetNodeId: "b",
+            status: "confirmed" as const,
+          },
+          {
+            id: "e2",
+            sourceNodeId: "b",
+            targetNodeId: "a",
+            status: "confirmed" as const,
+          },
+        ],
+        loops: [loop],
+      };
+      const agenda = buildInterviewAgenda(notes, diagram, "refine");
+      expect(agenda.some((i) => i.includes("確認済みのループ"))).toBe(false);
+    });
+
     it("挙動が増加なのに R ループがなければ不整合を指摘する", () => {
       const bLoop = makeLoop({ id: "loop:x→y", label: "B1", polarity: "B" });
       const notes = notesWith({

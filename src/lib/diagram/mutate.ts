@@ -49,6 +49,7 @@ export async function applyMutationPlan(projectId: string, plan: MutationPlan) {
           polarity: edge.polarity,
           hasDelay: edge.hasDelay,
           rationale: edge.rationale,
+          ...(edge.status !== undefined ? { status: edge.status } : {}),
         })
         .where(eq(edges.id, edge.id));
     }
@@ -74,6 +75,7 @@ export async function applyMutationPlan(projectId: string, plan: MutationPlan) {
             polarity: e.polarity,
             hasDelay: e.hasDelay,
             rationale: e.rationale,
+            status: e.status,
           },
         ];
       });

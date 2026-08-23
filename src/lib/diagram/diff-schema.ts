@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { NODE_KINDS } from "@/db/schema";
+import { EDGE_STATUSES, NODE_KINDS } from "@/db/schema";
 
 /**
  * AI が出力する因果ループ図の差分。
@@ -78,11 +78,17 @@ export const diagramDiffSchema = z.object({
           .describe(
             "なぜ因果と言えるかの根拠。ユーザーの発言を引用または要約する。相関しか確認できていないなら因果リンクにしない",
           ),
+        status: z
+          .enum(EDGE_STATUSES)
+          .optional()
+          .describe(
+            "リンクの確からしさ。inferred=推測で置いた仮説（新規の既定）/ confirmed=ユーザーが実感として語った / disputed=ユーザーが否定・疑問視した。更新時に省略すると現状維持",
+          ),
       }),
     )
     .default([])
     .describe(
-      "追加または更新する因果リンク。同じ source→target のリンクがあれば極性・遅れ・根拠を更新する",
+      "追加または更新する因果リンク。同じ source→target のリンクがあれば極性・遅れ・根拠・確からしさを更新する",
     ),
   deleteEdges: z
     .array(

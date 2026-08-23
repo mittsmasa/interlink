@@ -107,4 +107,53 @@ describe("applyMutationPlan", () => {
     expect(snapshot.nodes.map((n) => n.name).sort()).toEqual(["A", "C"]);
     expect(snapshot.edges).toHaveLength(0);
   });
+
+  it("status は省略時 inferred で保存され、指定時のみ更新される", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+
+    await applyDiff(project.id, {
+      upsertNodes: [{ name: "残業時間" }, { name: "疲労" }],
+      upsertEdges: [
+        {
+          source: "残業時間",
+          target: "疲労",
+          polarity: "+",
+          rationale: "推測",
+        },
+      ],
+    });
+    expect((await loadDiagramSnapshot(project.id)).edges[0].status).toBe(
+      "inferred",
+    );
+
+    await applyDiff(project.id, {
+      upsertEdges: [
+        {
+          source: "残業時間",
+          target: "疲労",
+          polarity: "+",
+          rationale: "本人が実感として語った",
+          status: "confirmed",
+        },
+      ],
+    });
+    expect((await loadDiagramSnapshot(project.id)).edges[0].status).toBe(
+      "confirmed",
+    );
+
+    // status を省略した更新は現状維持
+    await applyDiff(project.id, {
+      upsertEdges: [
+        {
+          source: "残業時間",
+          target: "疲労",
+          polarity: "-",
+          rationale: "極性だけ見直し",
+        },
+      ],
+    });
+    const [edge] = (await loadDiagramSnapshot(project.id)).edges;
+    expect(edge).toMatchObject({ polarity: "-", status: "confirmed" });
+  });
 });

@@ -1,5 +1,6 @@
 "use client";
 
+import { CheckCircleIcon, WarningCircleIcon } from "@phosphor-icons/react";
 import {
   BaseEdge,
   EdgeLabelRenderer,
@@ -38,6 +39,8 @@ export function CausalEdge({ id, source, target, data, selected }: EdgeProps) {
   );
   const isNegative = edge.polarity === "-";
   const color = isNegative ? "var(--vermilion)" : "var(--ink)";
+  // 異議ありのリンクは破線で「まだ確かでない」ことを控えめに示す。推測（既定）は通常線のまま
+  const disputed = edge.status === "disputed";
 
   return (
     <>
@@ -48,6 +51,7 @@ export function CausalEdge({ id, source, target, data, selected }: EdgeProps) {
         style={{
           stroke: color,
           strokeWidth: emphasized || selected ? 2.4 : 1.6,
+          strokeDasharray: disputed ? "6 4" : undefined,
           opacity: dimmed ? 0.12 : 1,
           transition: "opacity 200ms, stroke-width 200ms",
         }}
@@ -78,6 +82,20 @@ export function CausalEdge({ id, source, target, data, selected }: EdgeProps) {
               >
                 ∥
               </span>
+            )}
+            {edge.status === "confirmed" && (
+              <CheckCircleIcon
+                className="size-3"
+                weight="fill"
+                aria-label="確認済み"
+              />
+            )}
+            {disputed && (
+              <WarningCircleIcon
+                className="size-3"
+                weight="fill"
+                aria-label="異議あり"
+              />
             )}
           </div>
         </div>
