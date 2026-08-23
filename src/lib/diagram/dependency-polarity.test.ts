@@ -152,3 +152,41 @@ describe("deriveSignedDependencies: ホワイトリスト関数", () => {
     expect(links[0]?.polarity).toBeNull();
   });
 });
+
+describe("deriveSignedDependencies: smooth / delay", () => {
+  it("smooth は引数の符号を保存する（均すだけで向きは変えない）", () => {
+    const links = deriveSignedDependencies([
+      { id: "s", name: "在庫", expression: null },
+      { id: "p", name: "認識在庫", expression: "smooth(在庫, 3)" },
+    ]);
+    expect(polarityOf(links, "s", "p")).toBe("+");
+  });
+
+  it("delay も同じく引数の符号を保存する", () => {
+    const links = deriveSignedDependencies([
+      { id: "s", name: "在庫", expression: null },
+      { id: "p", name: "着荷", expression: "delay(在庫, 2)" },
+    ]);
+    expect(polarityOf(links, "s", "p")).toBe("+");
+  });
+
+  it("符号が反転する文脈に置かれても伝わる", () => {
+    const links = deriveSignedDependencies([
+      { id: "s", name: "在庫", expression: null },
+      { id: "g", name: "目標", expression: null },
+      { id: "f", name: "補充", expression: "目標 - smooth(在庫, 3)" },
+    ]);
+    expect(polarityOf(links, "g", "f")).toBe("+");
+    expect(polarityOf(links, "s", "f")).toBe("-");
+  });
+
+  it("時定数側に現れる変数は符号不定（null）", () => {
+    const links = deriveSignedDependencies([
+      { id: "s", name: "在庫", expression: null },
+      { id: "t", name: "遅れ日数", expression: null },
+      { id: "p", name: "認識在庫", expression: "smooth(在庫, 遅れ日数)" },
+    ]);
+    expect(polarityOf(links, "s", "p")).toBe("+");
+    expect(polarityOf(links, "t", "p")).toBeNull();
+  });
+});

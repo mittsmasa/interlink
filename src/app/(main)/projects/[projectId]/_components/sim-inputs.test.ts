@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { DiagramEdge, DiagramNode } from "@/lib/queries/diagrams";
 import {
   canSimulate,
+  hasDelayedEdges,
   toSimEdges,
   toSimNodes,
   visibleSeriesNames,
@@ -73,14 +74,25 @@ describe("toSimNodes", () => {
 });
 
 describe("toSimEdges", () => {
-  it("polarity（+/-）をそのまま写す", () => {
+  it("polarity（+/-）と hasDelay をそのまま写す", () => {
     const result = toSimEdges([
       edge({ id: "e1", sourceNodeId: "a", targetNodeId: "b", polarity: "+" }),
-      edge({ id: "e2", sourceNodeId: "c", targetNodeId: "d", polarity: "-" }),
+      edge({
+        id: "e2",
+        sourceNodeId: "c",
+        targetNodeId: "d",
+        polarity: "-",
+        hasDelay: true,
+      }),
     ]);
     expect(result).toEqual([
-      { sourceNodeId: "a", targetNodeId: "b", polarity: "+" },
-      { sourceNodeId: "c", targetNodeId: "d", polarity: "-" },
+      {
+        sourceNodeId: "a",
+        targetNodeId: "b",
+        polarity: "+",
+        hasDelay: false,
+      },
+      { sourceNodeId: "c", targetNodeId: "d", polarity: "-", hasDelay: true },
     ]);
   });
 });
@@ -140,5 +152,34 @@ describe("visibleSeriesNames", () => {
       node({ id: "1", name: "率", kind: "flow", expression: "1" }),
     ]);
     expect(visibleSeriesNames(noStock, "stock")).toEqual([]);
+  });
+});
+
+describe("hasDelayedEdges", () => {
+  it("遅れ付きリンクが 1 本でもあれば true", () => {
+    expect(
+      hasDelayedEdges([
+        { sourceNodeId: "a", targetNodeId: "b", polarity: "+" },
+        {
+          sourceNodeId: "b",
+          targetNodeId: "c",
+          polarity: "-",
+          hasDelay: true,
+        },
+      ]),
+    ).toBe(true);
+  });
+
+  it("遅れが無ければ false", () => {
+    expect(
+      hasDelayedEdges([
+        {
+          sourceNodeId: "a",
+          targetNodeId: "b",
+          polarity: "+",
+          hasDelay: false,
+        },
+      ]),
+    ).toBe(false);
   });
 });

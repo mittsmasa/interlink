@@ -75,6 +75,9 @@ const DEFAULT_SIM_STEPS = 20;
 /** 1 回の呼び出しで回せるステップ数の上限（応答肥大・計算時間の歯止め） */
 const MAX_SIM_STEPS = 1000;
 const MAX_SCENARIOS = 8;
+/** 「遅れ」付きリンクの既定の遅らせ幅と上限（simulate の delaySteps） */
+const DEFAULT_DELAY_STEPS = 1;
+const MAX_DELAY_STEPS = 100;
 
 /** SFD 整合の lint ルール（simulate の前に気づける構造上の問題） */
 const SFD_LINT_RULES = new Set([
@@ -104,6 +107,15 @@ const simConfigInput = {
     .optional()
     .describe(
       "true なら stock が負にならないよう 0 で止める（在庫・人数など負が無意味な量に）",
+    ),
+  delaySteps: z
+    .number()
+    .int()
+    .min(1)
+    .max(MAX_DELAY_STEPS)
+    .optional()
+    .describe(
+      `「遅れ」が付いたリンクを何ステップ遅らせるか（既定 ${DEFAULT_DELAY_STEPS}、最大 ${MAX_DELAY_STEPS}）。遅れを大きくすると振動が出やすくなる`,
     ),
 };
 
@@ -719,7 +731,7 @@ export function buildMcpServer(userId: string) {
   server.registerTool(
     "run_simulation",
     {
-      description: `ストック&フロー化した図をシミュレーションし、stock ごとの要約（初期値 / 最終値 / 最小 / 最大 / 向き / 挙動パターン）と間引いた時系列を返す。図は変更しない。式は ${ALLOWED_FUNCTIONS.join("/")} の関数が使える。ok: false のときは error.type（missing-field / undefined-reference / cycle / diverged など）を見て update_diagram で図を直す。聞き取りノートの時間挙動と食い違えば mismatch が付く`,
+      description: `ストック&フロー化した図をシミュレーションし、stock ごとの要約（初期値 / 最終値 / 最小 / 最大 / 向き / 挙動パターン）と間引いた時系列を返す。図は変更しない。式は ${ALLOWED_FUNCTIONS.join("/")} の関数が使える（smooth(値, 時定数) / delay(値, 時定数) は 1 次遅れ）。図の「遅れ」付きリンクは delaySteps ステップぶん遅れて効く。ok: false のときは error.type（missing-field / undefined-reference / cycle / diverged など）を見て update_diagram で図を直す。聞き取りノートの時間挙動と食い違えば mismatch が付く`,
       inputSchema: z.object({
         projectId: z.string().min(1).describe("対象プロジェクトの ID"),
         ...simConfigInput,
@@ -727,7 +739,14 @@ export function buildMcpServer(userId: string) {
       }),
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async ({ projectId, dt, steps, nonNegativeStocks, overrides }) => {
+    async ({
+      projectId,
+      dt,
+      steps,
+      nonNegativeStocks,
+      delaySteps,
+      overrides,
+    }) => {
       const project = await findOwnedProject(projectId, userId);
       if (!project) {
         return toError("プロジェクトが見つかりません");
@@ -738,6 +757,7 @@ export function buildMcpServer(userId: string) {
         steps: steps ?? DEFAULT_SIM_STEPS,
         overrides,
         nonNegativeStocks,
+        delaySteps: delaySteps ?? DEFAULT_DELAY_STEPS,
       };
       const warnings = lintDiagram(diagram.nodes, diagram.edges)
         .filter((f) => SFD_LINT_RULES.has(f.rule))
@@ -785,7 +805,14 @@ export function buildMcpServer(userId: string) {
       }),
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async ({ projectId, dt, steps, nonNegativeStocks, scenarios }) => {
+    async ({
+      projectId,
+      dt,
+      steps,
+      nonNegativeStocks,
+      delaySteps,
+      scenarios,
+    }) => {
       const project = await findOwnedProject(projectId, userId);
       if (!project) {
         return toError("プロジェクトが見つかりません");
@@ -795,6 +822,7 @@ export function buildMcpServer(userId: string) {
         dt: dt ?? DEFAULT_SIM_DT,
         steps: steps ?? DEFAULT_SIM_STEPS,
         nonNegativeStocks,
+        delaySteps: delaySteps ?? DEFAULT_DELAY_STEPS,
       };
       const baseline = runSimulationOn(diagram, base);
       if (!baseline.ok) {

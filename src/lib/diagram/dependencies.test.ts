@@ -102,3 +102,14 @@ describe("isCausallyLinked", () => {
     expect(isCausallyLinked("x", "y", edges)).toBe(false);
   });
 });
+
+describe("deriveDependencies: smooth / delay", () => {
+  it("関数名は参照に数えず、引数の変数だけを依存にする", () => {
+    const links = deriveDependencies([
+      { id: "s", name: "在庫", expression: null },
+      { id: "p", name: "認識在庫", expression: "smooth(在庫, 3)" },
+    ]);
+    expect(links).toHaveLength(1);
+    expect(links[0]).toMatchObject({ fromNodeId: "s", toNodeId: "p" });
+  });
+});

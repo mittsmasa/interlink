@@ -36,7 +36,7 @@ export const diagramDiffSchema = z.object({
           .string()
           .optional()
           .describe(
-            "flow / auxiliary の計算式。四則演算（+ - * /）・べき乗（^）・関数 min/max/clamp/pow と既存の変数名のみ。それ以外の関数は不可。変数名は図にある名前を正確に書く（例: 残高 * 0.05、clamp(採用 - 離職, 0, 上限)）。stock / constant では使わない",
+            "flow / auxiliary の計算式。四則演算（+ - * /）・べき乗（^）・関数 min/max/clamp/pow/smooth/delay と既存の変数名のみ。それ以外の関数は不可。smooth(値, 時定数) と delay(値, 時定数) は 1 次遅れで、時定数が大きいほど反応が鈍る（認識の遅れ・着荷までの遅れなど）。変数名は図にある名前を正確に書く（例: 残高 * 0.05、clamp(採用 - 離職, 0, 上限)、smooth(在庫, 3)）。stock / constant では使わない",
           ),
         initialValue: z
           .number()

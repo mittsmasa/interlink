@@ -17,6 +17,7 @@ import { cn } from "@/lib/utils";
 import { LARGE_DIMS, SimChart } from "./sim-chart";
 import {
   canSimulate,
+  hasDelayedEdges,
   type SeriesMode,
   toSimEdges,
   toSimNodes,
@@ -41,16 +42,19 @@ export function SimulationPanel({
 }: SimulationPanelProps) {
   const [dt, setDt] = useState("1");
   const [steps, setSteps] = useState("20");
+  const [delaySteps, setDelaySteps] = useState("1");
   const [result, setResult] = useState<SimResult | null>(null);
   const [mode, setMode] = useState<SeriesMode>("all");
   const [expanded, setExpanded] = useState(false);
 
-  const { simNodes, simEdges, runnable } = useMemo(() => {
+  const { simNodes, simEdges, runnable, delayed } = useMemo(() => {
     const simNodes = toSimNodes(diagram.nodes);
+    const simEdges = toSimEdges(diagram.edges);
     return {
       simNodes,
-      simEdges: toSimEdges(diagram.edges),
+      simEdges,
       runnable: canSimulate(simNodes),
+      delayed: hasDelayedEdges(simEdges),
     };
   }, [diagram]);
 
@@ -79,7 +83,11 @@ export function SimulationPanel({
     // 数値変換は simulate 側の config 検証に委ねる（空欄→0, 不正→NaN はそこで
     // invalid-config として人間可読メッセージになる）
     setResult(
-      simulate(simNodes, simEdges, { dt: Number(dt), steps: Number(steps) }),
+      simulate(simNodes, simEdges, {
+        dt: Number(dt),
+        steps: Number(steps),
+        delaySteps: Number(delaySteps),
+      }),
     );
   };
 
@@ -119,7 +127,7 @@ export function SimulationPanel({
                 step="0.1"
                 value={dt}
                 onChange={(e) => setDt(e.target.value)}
-                className="h-8 w-16"
+                className="h-8 w-14"
               />
             </div>
             <div className="space-y-1">
@@ -135,9 +143,29 @@ export function SimulationPanel({
                 step="1"
                 value={steps}
                 onChange={(e) => setSteps(e.target.value)}
-                className="h-8 w-20"
+                className="h-8 w-16"
               />
             </div>
+            {/* 遅れ付きリンクがある図でだけ出す（無い図では効かない設定のため） */}
+            {delayed && (
+              <div className="space-y-1">
+                <Label
+                  htmlFor="sim-delay"
+                  className="text-muted-foreground text-xs"
+                >
+                  遅れ
+                </Label>
+                <Input
+                  id="sim-delay"
+                  type="number"
+                  step="1"
+                  min="1"
+                  value={delaySteps}
+                  onChange={(e) => setDelaySteps(e.target.value)}
+                  className="h-8 w-14"
+                />
+              </div>
+            )}
             <Button
               size="sm"
               className="ml-auto gap-1.5"
