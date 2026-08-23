@@ -3,8 +3,11 @@ import type { LintFinding } from "@/lib/diagram/lint";
 import type { Loop, LoopDetectionResult } from "@/lib/diagram/loops";
 import {
   BEHAVIOR_PATTERN_LABELS,
+  HYPOTHESIS_STATUS_LABELS,
   type InterviewNotes,
+  MAX_HYPOTHESES,
   MAX_STAKEHOLDERS,
+  MAX_VARIABLE_BEHAVIORS,
   MAX_VARIABLE_CANDIDATES,
 } from "@/lib/interview/notes";
 import { type InterviewPhase, PHASE_LABELS } from "@/lib/interview/phase";
@@ -187,7 +190,16 @@ const PHASE_GUIDE: Record<
       "この循環のどこに手を入れると、流れが変わりそうですか",
     ],
     transition:
-      "主要なループが実感で確認できたら、まだ語られていない構造（別の視点・別のループ）が残っていないかを探る",
+      "主要なループ（R と B が 1 つずつ以上）が実感で確認できたら、インサイトへ重心を移す。まだ語られていない構造（別の視点・別のループ）が残っていないかも探る",
+  },
+  insight: {
+    goal: "確かめた構造のどこに手を入れると流れが変わるか、介入仮説を立てて試し、記録する",
+    questions: [
+      "（介入候補を挙げて）ここに手を入れたら、何が起きそうですか",
+      "その変化を止めている／加速している要因のうち、実際に動かせるものはどれですか",
+    ],
+    transition:
+      "仮説を 1 つ以上試して status を更新できたら、残る未確認ループや別の介入点へ広げる",
   },
 };
 
@@ -234,6 +246,34 @@ export function formatNotesForPrompt(notes: InterviewNotes): string {
         : "（なし）"
     }`,
   );
+
+  lines.push(
+    `- 時間軸: ${
+      notes.timeHorizon
+        ? `${notes.timeHorizon.from} 〜 ${notes.timeHorizon.to}（単位: ${notes.timeHorizon.unit}）`
+        : "（未記録）"
+    }`,
+  );
+
+  if (notes.variableBehaviors.length > 0) {
+    lines.push("- 変数ごとの挙動:");
+    for (const vb of notes.variableBehaviors.slice(0, MAX_VARIABLE_BEHAVIORS)) {
+      lines.push(
+        `  - ${vb.name}: ${BEHAVIOR_PATTERN_LABELS[vb.pattern]} — ${vb.description}`,
+      );
+    }
+  }
+
+  if (notes.hypotheses.length > 0) {
+    lines.push("- 介入仮説:");
+    for (const h of notes.hypotheses.slice(0, MAX_HYPOTHESES)) {
+      const loops =
+        h.loopIds.length > 0 ? `、loops: ${h.loopIds.join(", ")}` : "";
+      lines.push(
+        `  - [${HYPOTHESIS_STATUS_LABELS[h.status]}] ${h.leveragePoint} → ${h.expectedEffect}（${h.status}${loops}）`,
+      );
+    }
+  }
   return lines.join("\n");
 }
 
@@ -275,10 +315,11 @@ ${agenda.map((item, i) => `${i + 1}. ${item}`).join("\n")}
   return `あなたは「interlink」のファシリテータです。システム思考の方法論に基づき、ユーザーの構造的な悩みを対話で聞き取り、因果ループ図を一緒に育てます。
 
 ## 方法論: ドラフト先行
-あなたが叩き台を描き、ユーザーには違和感のある所を直してもらう、という進め方をします。聞き取りは 3 つのフェーズで進みます:
+あなたが叩き台を描き、ユーザーには違和感のある所を直してもらう、という進め方をします。聞き取りは 4 つのフェーズで進みます:
 1. 焦点 — テーマと、その時間挙動（増減・振動・頭打ち）を、少ない往復で掴む
 2. ドラフト — あなた自身の推論で変数と因果リンクの叩き台を一枚描き、ループを閉じにいく
-3. すり合わせ — ドラフトをユーザーの実感と突き合わせ、違和感を直し、介入の仮説を立てる
+3. すり合わせ — ドラフトをユーザーの実感と突き合わせ、違和感を直し、ループの確からしさを確かめる
+4. インサイト — 確かめた構造のどこに手を入れると流れが変わるか、介入仮説を立てて試す
 
 - 発散（変数や関係を出す作業）はユーザーに丸投げせず、あなたが推論で担う。ユーザーには収束（違和感の指摘・修正）に集中してもらう
 - 焦点が掴めたら、材料が揃うのを待たずに描く。完璧な図ではなく、議論の叩き台を出すのが目的
@@ -300,6 +341,9 @@ ${agendaSection}## 対話の進め方
 - updateNotes は全置換。下記「現在のノート」の内容に新しい事実を加えた全体を送る。既存の内容を欠落させない
 - 変数候補（variableCandidates）は「考えたが、まだ図には置いていない控え」。図に描いた変数を重複して貯める必要はない
 - ユーザーがループに納得したら、そのループの id を confirmedLoopIds に加える
+- 問題を眺めている期間と粒度（いつから・いつまで・週/月/四半期）が分かったら timeHorizon に記録する
+- テーマ全体の挙動とは別に、個別の変数の推移が語られたら variableBehaviors に変数名（図と一致させる）と pattern で記録する。構造との整合判定に使う
+- 介入仮説は hypotheses に leveragePoint（手を入れる場所）/ expectedEffect（何が起きるか）/ loopIds（関係するループ）で記録し、試した結果で status を tested / rejected に更新する
 
 ### 現在のノート
 ${formatNotesForPrompt(notes)}
@@ -336,6 +380,13 @@ ${formatDiagramForPrompt(diagram)}
 
 ## 図の検証
 ${buildVerificationPromptSection(verification)}
+
+## インサイトの進め方（主要ループが確認できてから）
+- 「次に聞くこと」に介入候補（複数のループが交わる変数、特に R と B の接点）が挙がっていれば、そこを起点に「ここに手を入れたら何が起きそうか」を一緒に考え、介入仮説を立てる
+- 仮説は立てたら必ず updateNotes の hypotheses に記録する（status: proposed）
+- 図がストック&フロー化されていれば、シミュレーションの overrides でその変数（定数や初期値）を動かし、期待した効果が出るかを見比べる。出れば tested、出なければ rejected に更新し、なぜそうなったかを構造（どのループが勝ったか）で説明する
+- ストック&フロー化されていなければ、ループの物語で「その変数を動かすと、どのループが弱まり／強まるか」を言葉で辿り、ユーザーの実感で確かめる
+- 変数ごとの挙動と構造の不整合（振動なのに遅れ付き B が無い 等）が挙がっていれば、介入を考える前にその構造の抜けを埋める
 
 ## 検証の進め方
 - バランスループ（B）には目標（何に向かって安定しようとしているか）があるはず。図に見えなければ「このループは何を保とうとしていますか?」と尋ねる

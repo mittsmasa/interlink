@@ -225,4 +225,96 @@ describe("buildInterviewAgenda", () => {
       expect(agenda[0]).toContain("R1");
     });
   });
+
+  describe("insight フェーズ", () => {
+    const rLoop = makeLoop({
+      id: "loop:a→b→c",
+      label: "R1",
+      nodeIds: ["a", "b", "c"],
+      nodeNames: ["残業時間", "疲労", "ミス"],
+    });
+    const bLoop = makeLoop({
+      id: "loop:b→d",
+      label: "B1",
+      polarity: "B",
+      nodeIds: ["b", "d"],
+      nodeNames: ["疲労", "休息"],
+    });
+    const diagram = {
+      nodes: [
+        { id: "a", name: "残業時間" },
+        { id: "b", name: "疲労" },
+        { id: "c", name: "ミス" },
+        { id: "d", name: "休息" },
+      ],
+      edges: [
+        { sourceNodeId: "a", targetNodeId: "b" },
+        { sourceNodeId: "b", targetNodeId: "c" },
+        { sourceNodeId: "c", targetNodeId: "a" },
+        { sourceNodeId: "b", targetNodeId: "d" },
+        { sourceNodeId: "d", targetNodeId: "b" },
+      ],
+      loops: [rLoop, bLoop],
+    };
+    const confirmedNotes = notesWith({
+      confirmedLoopIds: [rLoop.id, bLoop.id],
+    });
+
+    it("介入候補（R と B の接点）を先頭で提示し、overrides での検証と hypotheses への記録を促す", () => {
+      const agenda = buildInterviewAgenda(confirmedNotes, diagram, "insight");
+      expect(agenda[0]).toContain("介入候補: 「疲労」（B1 と R1 の接点）");
+      expect(agenda[0]).toContain("run_simulation");
+      expect(agenda[0]).toContain("hypotheses");
+    });
+
+    it("交点が無ければ、仮説を一緒に考える指示になる", () => {
+      const agenda = buildInterviewAgenda(
+        notesWith({ confirmedLoopIds: [rLoop.id] }),
+        { ...diagram, loops: [rLoop] },
+        "insight",
+      );
+      expect(agenda[0]).toContain("交点になる変数がまだ無い");
+    });
+
+    it("変数ごとの挙動と構造の不整合を指摘する", () => {
+      const notes = notesWith({
+        ...confirmedNotes,
+        variableBehaviors: [
+          { name: "疲労", pattern: "oscillating", description: "波がある" },
+        ],
+      });
+      const agenda = buildInterviewAgenda(notes, diagram, "insight");
+      expect(
+        agenda.some((i) => i.includes("変数「疲労」の挙動は「振動している」")),
+      ).toBe(true);
+    });
+
+    it("未検証の仮説があれば試すよう促し、未確認ループの残件も添える", () => {
+      const notes = notesWith({
+        confirmedLoopIds: [rLoop.id],
+        hypotheses: [
+          {
+            leveragePoint: "休息",
+            expectedEffect: "疲労の波が収まる",
+            loopIds: [bLoop.id],
+            status: "proposed",
+          },
+          {
+            leveragePoint: "依頼量",
+            expectedEffect: "-",
+            loopIds: [],
+            status: "tested",
+          },
+        ],
+      });
+      const agenda = buildInterviewAgenda(notes, diagram, "insight");
+      const hyp = agenda.find((i) => i.includes("まだ試していない"));
+      expect(hyp).toContain("「休息 → 疲労の波が収まる」");
+      expect(hyp).not.toContain("依頼量");
+      expect(agenda.some((i) => i.includes("未確認のループが 1 件"))).toBe(
+        true,
+      );
+      expect(agenda.length).toBeLessThanOrEqual(MAX_AGENDA_ITEMS);
+    });
+  });
 });

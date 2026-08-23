@@ -1,12 +1,19 @@
 import type { EdgeStatus } from "@/db/schema";
 import type { Loop } from "@/lib/diagram/loops";
-import { BEHAVIOR_PATTERN_LABELS, type InterviewNotes } from "./notes";
+import {
+  computeDiagramMetrics,
+  describeCandidate,
+} from "@/lib/diagram/metrics";
+import { checkBehaviorConsistency, describeInconsistency } from "./consistency";
+import { HYPOTHESIS_STATUS_LABELS, type InterviewNotes } from "./notes";
 import type { InterviewPhase } from "./phase";
 
 /** プロンプトに注入するアジェンダ件数の上限（トークン抑制。一括質問のため少し緩める） */
 export const MAX_AGENDA_ITEMS = 4;
 /** 端点ノード（原因・影響が未接続）の指摘件数上限 */
 const MAX_ENDPOINT_ITEMS = 3;
+/** insight で一度に提示する介入候補の上限（多いと問いが散る） */
+const MAX_CANDIDATE_ITEMS = 2;
 
 type AgendaInput = {
   nodes: { id: string; name: string }[];
@@ -95,6 +102,69 @@ function buildEndpointItems(
   return items.slice(0, MAX_ENDPOINT_ITEMS);
 }
 
+/** テーマ全体・変数ごとの挙動と構造の不整合を指示文にする */
+function buildInconsistencyItems(
+  notes: InterviewNotes,
+  loops: readonly Loop[],
+): string[] {
+  return checkBehaviorConsistency(notes, loops)
+    .filter((c) => !c.consistent)
+    .map(describeInconsistency);
+}
+
+/**
+ * インサイト: 確かめた構造のどこに手を入れるかを、構造指標から候補を出して問う。
+ * 候補 → 不整合 → 未検証の仮説 → 未確認ループの残件、の順
+ */
+function buildInsightItems(
+  notes: InterviewNotes,
+  { nodes, edges, loops }: AgendaInput,
+): string[] {
+  const items: string[] = [];
+
+  const { interventionCandidates } = computeDiagramMetrics(nodes, edges, loops);
+  const shown = interventionCandidates.slice(0, MAX_CANDIDATE_ITEMS);
+  if (shown.length > 0) {
+    const list = shown
+      .map((c) => `「${c.name}」（${describeCandidate(c)}）`)
+      .join("、");
+    items.push(
+      `介入候補: ${list}。複数のループが交わる変数は、小さな変化が全体に波及しやすい。「ここに手を入れたら、何が起きそうですか?」と問い、介入の効果はシミュレーションの overrides（run_simulation）でその変数を動かして確かめる。立てた仮説は updateNotes の hypotheses に leveragePoint / expectedEffect / 関係する loopIds で記録する`,
+    );
+  } else {
+    items.push(
+      "ループの交点になる変数がまだ無い。確認済みのループのどこに手を入れると流れが変わりそうかをユーザーと考え、仮説を updateNotes の hypotheses に記録する",
+    );
+  }
+
+  items.push(...buildInconsistencyItems(notes, loops));
+
+  const proposed = notes.hypotheses.filter((h) => h.status === "proposed");
+  if (proposed.length > 0) {
+    const list = proposed
+      .map((h) => `「${h.leveragePoint} → ${h.expectedEffect}」`)
+      .join("、");
+    items.push(
+      `まだ試していない${HYPOTHESIS_STATUS_LABELS.proposed}: ${list}。シミュレーションの overrides でその変数を動かし、期待した効果が出るかを見比べる。結果に応じて hypotheses の status を tested / rejected に更新する`,
+    );
+  }
+
+  const confirmed = new Set(notes.confirmedLoopIds);
+  const unconfirmed = loops.filter((l) => !confirmed.has(l.id));
+  if (unconfirmed.length > 0) {
+    items.push(
+      `未確認のループが ${unconfirmed.length} 件残っている（${unconfirmed
+        .slice(0, 3)
+        .map((l) => l.label)
+        .join(
+          ", ",
+        )}${unconfirmed.length > 3 ? " ほか" : ""}）。介入の議論に関わるものから、実感と合うかを確かめる`,
+    );
+  }
+
+  return items;
+}
+
 /**
  * 「次にすること」を優先順で導出する。ドラフト先行なので、AI が叩き台を
  * 描く指示と、その叩き台の「違和感ポイント（=ユーザーに一括で問う所）」を
@@ -132,6 +202,14 @@ export function buildInterviewAgenda(
     return items.slice(0, MAX_AGENDA_ITEMS);
   }
 
+  // インサイト: どこに手を入れるかを構造指標から問う
+  if (phase === "insight") {
+    return buildInsightItems(notes, { nodes, edges, loops }).slice(
+      0,
+      MAX_AGENDA_ITEMS,
+    );
+  }
+
   // すり合わせ: ドラフトを実感と突き合わせ、違和感を直す
   const items: string[] = [];
 
@@ -151,26 +229,7 @@ export function buildInterviewAgenda(
   );
 
   // 3. 挙動と構造の不整合: 構造から予想される挙動（R=増殖 / B+遅れ=振動）と実挙動を突き合わせる
-  if (notes.behavior) {
-    const pattern = notes.behavior.pattern;
-    const hasReinforcing = loops.some((l) => l.polarity === "R");
-    const hasDelayedBalancing = loops.some(
-      (l) => l.polarity === "B" && l.hasDelay,
-    );
-    if (
-      (pattern === "increasing" || pattern === "decreasing") &&
-      !hasReinforcing
-    ) {
-      items.push(
-        `実際の挙動は「${BEHAVIOR_PATTERN_LABELS[pattern]}」なのに、図には自己強化（R）ループがない。変化を駆動し続けている強化構造がまだ描けていない可能性が高い。「何がこの変化をさらに加速させていますか?」と探る`,
-      );
-    }
-    if (pattern === "oscillating" && !hasDelayedBalancing) {
-      items.push(
-        `実際の挙動は「振動している」のに、振動を生む遅れ付きのバランス（B）ループが図にない。対処や調整の効果が現れるまでに時間差がないかを探る`,
-      );
-    }
-  }
+  items.push(...buildInconsistencyItems(notes, loops));
 
   // 4. 端点ノード: 原因や影響が未接続の変数を埋める
   items.push(...buildEndpointItems(nodes, edges));

@@ -51,6 +51,9 @@ export const getProjectSummariesByUserId = cache(async (userId: string) => {
           targetNodeId: true,
           polarity: true,
           hasDelay: true,
+          // insight フェーズの判定が confirmed 率を見るため必須。
+          // 落とすと一覧だけ条件をすり抜け、詳細ページと phase が食い違う
+          status: true,
         },
       },
     },

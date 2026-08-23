@@ -4,6 +4,8 @@ import { CaretDownIcon, NotebookIcon } from "@phosphor-icons/react";
 import { useState } from "react";
 import {
   BEHAVIOR_PATTERN_LABELS,
+  HYPOTHESIS_STATUS_LABELS,
+  type HypothesisStatus,
   type InterviewNotes,
 } from "@/lib/interview/notes";
 import { type InterviewPhase, PHASE_LABELS } from "@/lib/interview/phase";
@@ -26,7 +28,10 @@ export function NotesPanel({ notes, phase }: NotesPanelProps) {
     notes.behavior === null &&
     notes.idealBehavior === null &&
     notes.stakeholders.length === 0 &&
-    notes.variableCandidates.length === 0;
+    notes.variableCandidates.length === 0 &&
+    notes.timeHorizon === null &&
+    notes.variableBehaviors.length === 0 &&
+    notes.hypotheses.length === 0;
 
   return (
     <div className="border-b">
@@ -72,6 +77,13 @@ export function NotesPanel({ notes, phase }: NotesPanelProps) {
                 )}
               </dd>
 
+              <dt className="text-muted-foreground">時間軸</dt>
+              <dd>
+                {notes.timeHorizon
+                  ? `${notes.timeHorizon.from} 〜 ${notes.timeHorizon.to}（${notes.timeHorizon.unit}）`
+                  : "—"}
+              </dd>
+
               <dt className="text-muted-foreground">関係者</dt>
               <dd>
                 {notes.stakeholders.length > 0
@@ -101,10 +113,73 @@ export function NotesPanel({ notes, phase }: NotesPanelProps) {
                     ))
                   : "—"}
               </dd>
+
+              {notes.variableBehaviors.length > 0 && (
+                <>
+                  <dt className="text-muted-foreground">変数の挙動</dt>
+                  <dd>
+                    {notes.variableBehaviors.map((vb) => (
+                      <span
+                        key={vb.name}
+                        title={vb.description}
+                        className="after:content-['・'] last:after:content-none"
+                      >
+                        {vb.name}
+                        <span className="text-muted-foreground">
+                          ：{BEHAVIOR_PATTERN_LABELS[vb.pattern]}
+                        </span>
+                      </span>
+                    ))}
+                  </dd>
+                </>
+              )}
+
+              {notes.hypotheses.length > 0 && (
+                <>
+                  <dt className="text-muted-foreground">仮説</dt>
+                  <dd>
+                    <ul className="space-y-1">
+                      {notes.hypotheses.map((h) => (
+                        <li
+                          key={h.leveragePoint}
+                          className="flex items-start gap-1.5"
+                        >
+                          <HypothesisStatusChip status={h.status} />
+                          <span className="leading-snug">
+                            {h.leveragePoint}
+                            <span className="text-muted-foreground">
+                              {" → "}
+                              {h.expectedEffect}
+                            </span>
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </dd>
+                </>
+              )}
             </dl>
           )}
         </div>
       )}
     </div>
+  );
+}
+
+/** 仮説の検証状態。検証済みは墨、棄却は朱、未検証は枠だけ */
+function HypothesisStatusChip({ status }: { status: HypothesisStatus }) {
+  return (
+    <span
+      className={cn(
+        "mt-0.5 shrink-0 rounded-full border px-1.5 font-serif text-[10px] leading-4",
+        status === "tested" &&
+          "border-foreground bg-foreground text-background",
+        status === "rejected" &&
+          "border-(--vermilion) text-(--vermilion) line-through",
+        status === "proposed" && "text-muted-foreground",
+      )}
+    >
+      {HYPOTHESIS_STATUS_LABELS[status]}
+    </span>
   );
 }

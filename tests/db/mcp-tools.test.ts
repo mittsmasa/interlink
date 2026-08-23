@@ -197,6 +197,178 @@ describe("MCP tools", () => {
     expect(after.interview.agenda.join("\n")).not.toContain(loop.id);
   });
 
+  it("get_diagram は構造指標（介入候補）と整合判定を返し、R/B を確認すると insight フェーズの誘導になる", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+
+    // R1: 残業時間→疲労→ミス→残業時間 / B1: 疲労→休息→(−)疲労（遅れ付き）。疲労が接点
+    const update = await client.callTool({
+      name: "update_diagram",
+      arguments: {
+        projectId: project.id,
+        diff: {
+          upsertNodes: [
+            { name: "残業時間" },
+            { name: "疲労" },
+            { name: "ミス" },
+            { name: "休息" },
+          ],
+          upsertEdges: [
+            {
+              source: "残業時間",
+              target: "疲労",
+              polarity: "+",
+              rationale: "-",
+            },
+            { source: "疲労", target: "ミス", polarity: "+", rationale: "-" },
+            {
+              source: "ミス",
+              target: "残業時間",
+              polarity: "+",
+              rationale: "-",
+            },
+            { source: "疲労", target: "休息", polarity: "+", rationale: "-" },
+            {
+              source: "休息",
+              target: "疲労",
+              polarity: "-",
+              hasDelay: true,
+              rationale: "-",
+            },
+          ],
+        },
+      },
+    });
+    expect(update.isError).toBeFalsy();
+
+    const read = await client.callTool({
+      name: "get_diagram",
+      arguments: { projectId: project.id },
+    });
+    const diagram = JSON.parse(textOf(read)) as {
+      loops: { id: string; polarity: string }[];
+      metrics: {
+        nodes: { name: string; loopCount: number }[];
+        interventionCandidates: {
+          name: string;
+          reason: string;
+          description: string;
+          loopIds: string[];
+        }[];
+      };
+      consistency: unknown[];
+      interview: { phase: string };
+    };
+    expect(diagram.metrics.nodes[0]).toMatchObject({
+      name: "疲労",
+      loopCount: 2,
+    });
+    expect(diagram.metrics.interventionCandidates).toHaveLength(1);
+    expect(diagram.metrics.interventionCandidates[0]).toMatchObject({
+      name: "疲労",
+      reason: "rb-junction",
+      description: "B1 と R1 の接点",
+    });
+    expect(diagram.consistency).toEqual([]); // 挙動が未記録なら判定しない
+    expect(diagram.interview.phase).toBe("refine");
+
+    // 両ループを確認し、変数の挙動と仮説を記録すると insight へ
+    const rId = diagram.loops.find((l) => l.polarity === "R")?.id;
+    const bId = diagram.loops.find((l) => l.polarity === "B")?.id;
+    const notes = await client.callTool({
+      name: "update_notes",
+      arguments: {
+        projectId: project.id,
+        notes: {
+          behavior: { pattern: "oscillating", description: "波がある" },
+          confirmedLoopIds: [rId, bId],
+          timeHorizon: { from: "半年前", to: "現在", unit: "月" },
+          variableBehaviors: [
+            { name: "ミス", pattern: "oscillating", description: "-" },
+          ],
+          hypotheses: [
+            {
+              leveragePoint: "休息",
+              expectedEffect: "疲労の波が収まる",
+              loopIds: [bId],
+            },
+          ],
+        },
+      },
+    });
+    expect(notes.isError).toBeFalsy();
+    const saved = JSON.parse(textOf(notes)) as {
+      notes: { hypotheses: { status: string }[] };
+      interview: { phase: string; agenda: string[] };
+    };
+    expect(saved.notes.hypotheses[0].status).toBe("proposed");
+    // エッジは既定 inferred なので confirmed 率 0% → ループを確認しても refine で止まる
+    expect(saved.interview.phase).toBe("refine");
+
+    // 一覧の phase も同じ導出になる（射影が status を落とすと insight にすり抜ける）
+    const list = await client.callTool({ name: "list_projects" });
+    const { projects: listed } = JSON.parse(textOf(list)) as {
+      projects: Record<string, unknown>[];
+    };
+    expect(listed.find((p) => p.id === project.id)).toMatchObject({
+      interviewPhase: "refine",
+    });
+
+    // リンクの確からしさを confirmed にすると insight へ（5 本中 3 本 = 60%）
+    const confirmEdges = await client.callTool({
+      name: "update_diagram",
+      arguments: {
+        projectId: project.id,
+        diff: {
+          upsertEdges: [
+            {
+              source: "残業時間",
+              target: "疲労",
+              polarity: "+",
+              rationale: "-",
+              status: "confirmed",
+            },
+            {
+              source: "疲労",
+              target: "ミス",
+              polarity: "+",
+              rationale: "-",
+              status: "confirmed",
+            },
+            {
+              source: "疲労",
+              target: "休息",
+              polarity: "+",
+              rationale: "-",
+              status: "confirmed",
+            },
+          ],
+        },
+      },
+    });
+    const confirmed = JSON.parse(textOf(confirmEdges)) as {
+      interview: { phase: string; agenda: string[] };
+    };
+    expect(confirmed.interview.phase).toBe("insight");
+    expect(confirmed.interview.agenda[0]).toContain(
+      "介入候補: 「疲労」（B1 と R1 の接点）",
+    );
+
+    const reread = await client.callTool({
+      name: "get_diagram",
+      arguments: { projectId: project.id },
+    });
+    const after = JSON.parse(textOf(reread)) as {
+      consistency: { variable: string | null; consistent: boolean }[];
+    };
+    // テーマ全体: 遅れ付き B があるので整合 / ミス: R1 しか通らないので不整合
+    expect(after.consistency).toEqual([
+      expect.objectContaining({ variable: null, consistent: true }),
+      expect.objectContaining({ variable: "ミス", consistent: false }),
+    ]);
+  });
+
   it("get_diagram は式由来リンクを dependencies に返し、それで閉じる円環を derived ループとして含める", async () => {
     const user = await createUser();
     const project = await createProject(user.id);
@@ -898,7 +1070,12 @@ describe("MCP interview context", () => {
     expect(payload.notes.variableCandidates.map((v) => v.name)).toEqual([
       "残業時間",
     ]);
-    expect(payload.dropped).toEqual({ stakeholders: 0, variableCandidates: 0 });
+    expect(payload.dropped).toEqual({
+      stakeholders: 0,
+      variableCandidates: 0,
+      variableBehaviors: 0,
+      hypotheses: 0,
+    });
     expect(typeof payload.updatedAt).toBe("number");
 
     // replace は全置換

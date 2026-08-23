@@ -16,6 +16,12 @@ import {
   deriveLoopDependencies,
 } from "@/lib/diagram/loop-edges";
 import { detectLoops, MAX_LOOPS } from "@/lib/diagram/loops";
+import {
+  computeDiagramMetrics,
+  describeCandidate,
+  MAX_INTERVENTION_CANDIDATES,
+  MAX_METRIC_NODES,
+} from "@/lib/diagram/metrics";
 import { applyMutationPlan } from "@/lib/diagram/mutate";
 import { toSimEdges, toSimNodes } from "@/lib/diagram/sim-inputs";
 import {
@@ -30,6 +36,7 @@ import {
   simulate,
 } from "@/lib/diagram/simulate";
 import { loadDiagramSnapshot } from "@/lib/diagram/snapshot";
+import { checkBehaviorConsistency } from "@/lib/interview/consistency";
 import {
   interviewNotesSchema,
   parseInterviewNotes,
@@ -51,7 +58,7 @@ import { getProjectSummariesByUserId } from "@/lib/queries/projects";
 const SERVER_INSTRUCTIONS = `interlink は「問いの構造を図にする」アプリ。ユーザーの構造的な悩みを聞き取り、因果ループ図（CLD）として一緒に育てる。
 
 - ユーザーの悩みを聞き取りながら図を作るときは、interview プロンプトを使うと聞き取りの方法論と現在地が手に入る（最短の入口）
-- 図を読むには get_diagram。ループ（R/B）・lint 指摘・システム原型に加え、聞き取りノートと「次に聞くこと」（interview.phase / interview.agenda）も返る
+- 図を読むには get_diagram。ループ（R/B）・lint 指摘・システム原型・構造指標（metrics: ループの交点 = 介入候補）・挙動と構造の整合（consistency）に加え、聞き取りノートと「次に聞くこと」（interview.phase / interview.agenda）も返る
 - 図の書き込みは update_diagram（差分形式）。変数は増減を語れる名詞句にし、因果リンクには根拠（rationale）を必ず添える。相関しか確認できていない関係を因果にしない
 - 図を持ち出すときは export_diagram（mermaid はそのまま描画できる。markdown は根拠付きの表）。プロジェクトの改名は update_project、削除は delete_project（取り消せない。ユーザーの明示的な指示があるときだけ）
 - resources でも読める: interlink://projects（一覧）、interlink://projects/{id}/diagram.md（図の markdown）、interlink://projects/{id}/notes.json（聞き取りノート）
@@ -287,7 +294,7 @@ export function buildMcpServer(userId: string) {
     "get_diagram",
     {
       description:
-        "プロジェクトの因果ループ図の現在地を返す。変数・因果リンク・式由来の情報リンク（dependencies）に加え、導出済みの検証結果（フィードバックループと R/B 極性、lint 指摘、システム原型マッチ）を含む。loops[].id は update_notes の confirmedLoopIds と archetypeMatches[].loopIds が指す ID。極性 ? は式の符号が構造から決まらない極性未定、derived は式由来リンクを含む暫定ループ。updatedAt は update_* の expectedUpdatedAt に渡せる",
+        "プロジェクトの因果ループ図の現在地を返す。変数・因果リンク・式由来の情報リンク（dependencies）に加え、導出済みの検証結果（フィードバックループと R/B 極性、lint 指摘、システム原型マッチ）、構造指標（metrics: ノードごとの次数とループ参加数の上位、介入候補 = 複数ループの交点・R と B の接点）、時間挙動と構造の整合判定（consistency: 期待する構造 / 見つかった構造 / 探り方）を含む。loops[].id は update_notes の confirmedLoopIds / hypotheses[].loopIds と archetypeMatches[].loopIds が指す ID。極性 ? は式の符号が構造から決まらない極性未定、derived は式由来リンクを含む暫定ループ。updatedAt は update_* の expectedUpdatedAt に渡せる",
       inputSchema: z.object({
         projectId: z.string().min(1).describe("対象プロジェクトの ID"),
       }),
@@ -301,8 +308,14 @@ export function buildMcpServer(userId: string) {
       const diagram = await loadDiagramSnapshot(projectId);
       // キャンバスと同じ入力（因果エッジ + 式由来リンク）でループを導出する
       const dependencies = deriveLoopDependencies(diagram);
-      const loopResult = detectLoops(diagram.nodes, buildLoopEdges(diagram));
+      const loopEdges = buildLoopEdges(diagram);
+      const loopResult = detectLoops(diagram.nodes, loopEdges);
       const guidance = deriveGuidance(project, diagram);
+      const metrics = computeDiagramMetrics(
+        diagram.nodes,
+        loopEdges,
+        loopResult.loops,
+      );
       const nameById = new Map(diagram.nodes.map((n) => [n.id, n.name]));
       return toResult({
         project: { id: project.id, title: project.title },
@@ -351,6 +364,26 @@ export function buildMcpServer(userId: string) {
           confirmedLoopIds: guidance.notes.confirmedLoopIds,
         }),
         archetypeMatches: matchArchetypes(loopResult.loops),
+        metrics: {
+          nodes: metrics.nodes.slice(0, MAX_METRIC_NODES).map((m) => ({
+            name: m.name,
+            inDegree: m.inDegree,
+            outDegree: m.outDegree,
+            loopCount: m.loopCount,
+            reinforcingLoopCount: m.reinforcingLoopCount,
+            balancingLoopCount: m.balancingLoopCount,
+          })),
+          interventionCandidates: metrics.interventionCandidates
+            .slice(0, MAX_INTERVENTION_CANDIDATES)
+            .map((c) => ({
+              name: c.name,
+              reason: c.reason,
+              description: describeCandidate(c),
+              loopIds: c.loopIds,
+              loopLabels: c.loopLabels,
+            })),
+        },
+        consistency: checkBehaviorConsistency(guidance.notes, loopResult.loops),
         interviewNotes: guidance.notes,
         interview: { phase: guidance.phase, agenda: guidance.agenda },
       });
@@ -462,7 +495,7 @@ export function buildMcpServer(userId: string) {
     "update_notes",
     {
       description:
-        "聞き取りノートを更新する。テーマ・時間挙動・理想・関係者・変数候補・確認済みループ ID を聞き取ったら反映する。図に置く前の変数候補はここに貯める。既定の mode: append では送った差分が既存ノートとマージされる（配列は union、スカラーは非 null のみ上書き）ので、新しく分かった事実だけ送ればよい。mode: replace は全置換（既存の内容を欠落させないよう全体を送る）。応答に保存後の notes と、保持上限で落ちた件数（dropped）を返す",
+        "聞き取りノートを更新する。テーマ・時間挙動・理想・関係者・変数候補・確認済みループ ID・時間軸（timeHorizon）・変数ごとの挙動（variableBehaviors）・介入仮説（hypotheses: leveragePoint / expectedEffect / loopIds / status）を聞き取ったら反映する。図に置く前の変数候補はここに貯める。hypotheses は同じ leveragePoint を送ると status / expectedEffect が上書きされるので、試した結果（tested / rejected）の反映に使う。既定の mode: append では送った差分が既存ノートとマージされる（配列は union、スカラーは非 null のみ上書き）ので、新しく分かった事実だけ送ればよい。mode: replace は全置換（既存の内容を欠落させないよう全体を送る）。応答に保存後の notes と、保持上限で落ちた件数（dropped）を返す",
       inputSchema: z.object({
         projectId: z.string().min(1).describe("対象プロジェクトの ID"),
         notes: interviewNotesSchema,
