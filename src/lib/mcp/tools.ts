@@ -9,10 +9,7 @@ import { projects } from "@/db/schema";
 import { planDiagramMutation } from "@/lib/diagram/apply-diff";
 import { matchArchetypes } from "@/lib/diagram/archetypes";
 import { diagramDiffSchema } from "@/lib/diagram/diff-schema";
-import {
-  exportDiagramToMarkdown,
-  exportDiagramToMermaid,
-} from "@/lib/diagram/export";
+import { renderDiagramExport } from "@/lib/diagram/export";
 import { lintDiagram } from "@/lib/diagram/lint";
 import { detectLoops } from "@/lib/diagram/loops";
 import { applyMutationPlan } from "@/lib/diagram/mutate";
@@ -441,22 +438,16 @@ export function buildMcpServer(userId: string) {
   return server;
 }
 
-/** export_diagram と diagram.md resource が共有する描画。図と検証結果を読んでテキストにする */
+/** export_diagram と diagram.md resource が共有する描画。図を読んでテキストにする */
 async function renderExport(
   project: { id: string; title: string; interviewNotes: string | null },
   format: "mermaid" | "markdown",
 ) {
   const diagram = await loadDiagramSnapshot(project.id);
-  const loopResult = detectLoops(diagram.nodes, diagram.edges);
-  if (format === "mermaid") {
-    return exportDiagramToMermaid(diagram, loopResult.loops);
-  }
-  return exportDiagramToMarkdown({
+  return renderDiagramExport(format, {
     title: project.title,
-    diagram,
-    loops: loopResult.loops,
-    truncated: loopResult.truncated,
-    matches: matchArchetypes(loopResult.loops),
+    nodes: diagram.nodes,
+    edges: diagram.edges,
     notes: parseInterviewNotes(project.interviewNotes),
   });
 }

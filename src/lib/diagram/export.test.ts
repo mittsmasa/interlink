@@ -4,6 +4,7 @@ import {
   type ExportDiagram,
   exportDiagramToMarkdown,
   exportDiagramToMermaid,
+  renderDiagramExport,
 } from "./export";
 import type { Loop } from "./loops";
 
@@ -145,5 +146,47 @@ describe("exportDiagramToMarkdown", () => {
   it("ループ打ち切りを明示する", () => {
     const text = exportDiagramToMarkdown({ diagram, loops, truncated: true });
     expect(text).toContain("- …ループが多いため一部を省略");
+  });
+});
+
+describe("renderDiagramExport", () => {
+  const input = {
+    title: "共有の問い",
+    nodes: [
+      { id: "a", name: "残業時間" },
+      { id: "b", name: "疲労" },
+    ],
+    edges: [
+      {
+        id: "e1",
+        sourceNodeId: "a",
+        targetNodeId: "b",
+        polarity: "+" as const,
+        hasDelay: false,
+        rationale: "a",
+      },
+      {
+        id: "e2",
+        sourceNodeId: "b",
+        targetNodeId: "a",
+        polarity: "-" as const,
+        hasDelay: true,
+        rationale: "b",
+      },
+    ],
+  };
+
+  it("ID 付きの行からループを導出して mermaid / markdown を描く", () => {
+    const mermaid = renderDiagramExport("mermaid", input);
+    expect(mermaid).toContain('n0 -- "+" --> n1');
+    expect(mermaid).toContain('n1 -. "-" .-> n0');
+    expect(mermaid).toContain(
+      "%% B1（バランス、遅れあり）: 残業時間 → 疲労 → 残業時間",
+    );
+
+    const markdown = renderDiagramExport("markdown", input);
+    expect(markdown.startsWith("# 共有の問い")).toBe(true);
+    expect(markdown).toContain("| 疲労 | 残業時間 | - | あり | b |");
+    expect(markdown).toContain("- B1（バランス、遅れあり）");
   });
 });

@@ -1,5 +1,5 @@
-import type { ArchetypeMatch } from "./archetypes";
-import type { Loop } from "./loops";
+import { type ArchetypeMatch, matchArchetypes } from "./archetypes";
+import { detectLoops, type Loop } from "./loops";
 
 /**
  * 図の持ち出し（export_diagram / resources）用のテキスト生成。
@@ -245,4 +245,54 @@ export function exportDiagramToMarkdown(input: ExportMarkdownInput): string {
   }
 
   return lines.join("\n");
+}
+
+export type ExportFormat = "mermaid" | "markdown";
+
+/** DB の行をそのまま渡せる入力（ID 付き）。ループ・原型はここで導出する */
+export type RenderExportInput = {
+  title?: string | null;
+  nodes: (ExportDiagram["nodes"][number] & { id: string })[];
+  edges: {
+    id: string;
+    sourceNodeId: string;
+    targetNodeId: string;
+    polarity: "+" | "-";
+    hasDelay: boolean;
+    rationale: string;
+  }[];
+  notes?: ExportNotes | null;
+};
+
+/**
+ * export_diagram / resources / Web の書き出しメニューが共有する入口。
+ * ループ検出と原型マッチを済ませてからフォーマット別の描画に渡す
+ */
+export function renderDiagramExport(
+  format: ExportFormat,
+  input: RenderExportInput,
+): string {
+  const nameById = new Map(input.nodes.map((n) => [n.id, n.name]));
+  const diagram: ExportDiagram = {
+    nodes: input.nodes,
+    edges: input.edges.map((e) => ({
+      sourceName: nameById.get(e.sourceNodeId) ?? "",
+      targetName: nameById.get(e.targetNodeId) ?? "",
+      polarity: e.polarity,
+      hasDelay: e.hasDelay,
+      rationale: e.rationale,
+    })),
+  };
+  const loopResult = detectLoops(input.nodes, input.edges);
+  if (format === "mermaid") {
+    return exportDiagramToMermaid(diagram, loopResult.loops);
+  }
+  return exportDiagramToMarkdown({
+    title: input.title,
+    diagram,
+    loops: loopResult.loops,
+    truncated: loopResult.truncated,
+    matches: matchArchetypes(loopResult.loops),
+    notes: input.notes,
+  });
 }
