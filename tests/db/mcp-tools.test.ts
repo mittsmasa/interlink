@@ -98,15 +98,108 @@ describe("MCP tools", () => {
     });
     const diagram = JSON.parse(textOf(read)) as {
       nodes: { name: string }[];
-      loops: { polarity: string; nodeNames: string[] }[];
+      dependencies: { from: string; to: string; polarity: string | null }[];
+      loops: {
+        id: string;
+        label: string;
+        polarity: string;
+        hasDelay: boolean;
+        derived: boolean;
+        nodeNames: string[];
+        edges: { source: string; target: string }[];
+      }[];
+      loopLimit: { truncated: boolean; shown: number; limit: number };
+      archetypeMatches: { loopIds: string[] }[];
     };
     expect(diagram.nodes.map((n) => n.name).sort()).toEqual([
       "残業時間",
       "疲労",
     ]);
-    // 正リンク 2 本のループ → 自己強化（R）
+    expect(diagram.dependencies).toEqual([]);
+    // 正リンク 2 本のループ → 自己強化（R）。confirmedLoopIds に使える id と辿れる edges を返す
     expect(diagram.loops).toHaveLength(1);
-    expect(diagram.loops[0].polarity).toBe("R");
+    const [loop] = diagram.loops;
+    expect(loop).toMatchObject({
+      label: "R1",
+      polarity: "R",
+      hasDelay: false,
+      derived: false,
+    });
+    expect(loop.id).toMatch(/^loop:/);
+    expect(loop.edges).toHaveLength(2);
+    expect(loop.edges.map((e) => `${e.source}→${e.target}`).sort()).toEqual(
+      ["残業時間→疲労", "疲労→残業時間"].sort(),
+    );
+    expect(loop.edges[0].source).toBe(loop.nodeNames[0]);
+    expect(diagram.loopLimit).toEqual({
+      truncated: false,
+      shown: 1,
+      limit: 50,
+    });
+
+    // 返した id で確認済みループとして記録でき、agenda から未確認の指示が消える
+    const confirm = await client.callTool({
+      name: "update_notes",
+      arguments: {
+        projectId: project.id,
+        notes: { confirmedLoopIds: [loop.id] },
+      },
+    });
+    expect(confirm.isError).toBeFalsy();
+    const reread = await client.callTool({
+      name: "get_diagram",
+      arguments: { projectId: project.id },
+    });
+    const after = JSON.parse(textOf(reread)) as {
+      interviewNotes: { confirmedLoopIds: string[] };
+      interview: { agenda: string[] };
+    };
+    expect(after.interviewNotes.confirmedLoopIds).toEqual([loop.id]);
+    expect(after.interview.agenda.join("\n")).not.toContain(loop.id);
+  });
+
+  it("get_diagram は式由来リンクを dependencies に返し、それで閉じる円環を derived ループとして含める", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+
+    const update = await client.callTool({
+      name: "update_diagram",
+      arguments: {
+        projectId: project.id,
+        diff: {
+          upsertNodes: [
+            { name: "残高", kind: "stock", initialValue: 100 },
+            { name: "利息", kind: "flow", expression: "残高*0.1" },
+          ],
+          upsertEdges: [
+            {
+              source: "利息",
+              target: "残高",
+              polarity: "+",
+              rationale: "利息が残高に積み上がる",
+            },
+          ],
+        },
+      },
+    });
+    expect(update.isError).toBeFalsy();
+
+    const read = await client.callTool({
+      name: "get_diagram",
+      arguments: { projectId: project.id },
+    });
+    const diagram = JSON.parse(textOf(read)) as {
+      dependencies: { from: string; to: string; polarity: string | null }[];
+      loops: { polarity: string; derived: boolean; nodeNames: string[] }[];
+    };
+    // 残高 →(式) 利息 は因果エッジが無いので情報リンクとして現れる
+    expect(diagram.dependencies).toEqual([
+      { from: "残高", to: "利息", polarity: "+" },
+    ]);
+    // 因果 1 本 + 式由来 1 本で閉じた暫定 R ループ
+    expect(diagram.loops).toHaveLength(1);
+    expect(diagram.loops[0]).toMatchObject({ polarity: "R", derived: true });
   });
 
   it("他ユーザーの project は get_diagram / update_diagram とも見つからない", async () => {

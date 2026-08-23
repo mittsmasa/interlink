@@ -47,6 +47,33 @@ describe("buildVerificationPromptSection", () => {
     expect(text).toContain("2 件以上省略");
   });
 
+  it("極性は R / B / ? で三値に表示され、? は極性未定と注記される", () => {
+    const text = buildVerificationPromptSection({
+      ...emptyVerification,
+      loopResult: {
+        loops: [loop(1, "R"), loop(2, "B"), loop(3, "?")],
+        truncated: false,
+      },
+    });
+    expect(text).toContain("R1（自己強化、id: loop:1）");
+    expect(text).toContain("B2（バランス、id: loop:2）");
+    expect(text).toContain(
+      "?3（極性未定（式の符号が構造から決まらない）、id: loop:3）",
+    );
+  });
+
+  it("式由来の暫定ループにはその旨を注記する", () => {
+    const text = buildVerificationPromptSection({
+      ...emptyVerification,
+      loopResult: {
+        loops: [{ ...loop(1, "R"), derived: true }, loop(2, "B")],
+        truncated: false,
+      },
+    });
+    expect(text).toContain("R1（自己強化、式由来の暫定ループ、id: loop:1）");
+    expect(text).toContain("B2（バランス、id: loop:2）");
+  });
+
   it("lint 指摘は上位 5 件に制限される", () => {
     const findings = Array.from({ length: 7 }, (_, i) => ({
       rule: "isolated-node" as const,

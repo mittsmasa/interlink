@@ -7,7 +7,11 @@ import { planDiagramMutation } from "@/lib/diagram/apply-diff";
 import { matchArchetypes } from "@/lib/diagram/archetypes";
 import { diagramDiffSchema } from "@/lib/diagram/diff-schema";
 import { lintDiagram } from "@/lib/diagram/lint";
-import { detectLoops } from "@/lib/diagram/loops";
+import {
+  buildLoopEdges,
+  deriveLoopDependencies,
+} from "@/lib/diagram/loop-edges";
+import { detectLoops, MAX_LOOPS } from "@/lib/diagram/loops";
 import { applyMutationPlan } from "@/lib/diagram/mutate";
 import { loadDiagramSnapshot } from "@/lib/diagram/snapshot";
 import { interviewNotesSchema } from "@/lib/interview/notes";
@@ -149,7 +153,7 @@ export function buildMcpServer(userId: string) {
     "get_diagram",
     {
       description:
-        "プロジェクトの因果ループ図の現在地を返す。変数・因果リンクに加え、導出済みの検証結果（フィードバックループと R/B 極性、lint 指摘、システム原型マッチ）を含む",
+        "プロジェクトの因果ループ図の現在地を返す。変数・因果リンク・式由来の情報リンク（dependencies）に加え、導出済みの検証結果（フィードバックループと R/B 極性、lint 指摘、システム原型マッチ）を含む。loops[].id は update_notes の confirmedLoopIds と archetypeMatches[].loopIds が指す ID。極性 ? は式の符号が構造から決まらない極性未定、derived は式由来リンクを含む暫定ループ",
       inputSchema: z.object({
         projectId: z.string().min(1).describe("対象プロジェクトの ID"),
       }),
@@ -160,8 +164,11 @@ export function buildMcpServer(userId: string) {
         return toError("プロジェクトが見つかりません");
       }
       const diagram = await loadDiagramSnapshot(projectId);
-      const loopResult = detectLoops(diagram.nodes, diagram.edges);
+      // キャンバスと同じ入力（因果エッジ + 式由来リンク）でループを導出する
+      const dependencies = deriveLoopDependencies(diagram);
+      const loopResult = detectLoops(diagram.nodes, buildLoopEdges(diagram));
       const guidance = deriveGuidance(project, diagram);
+      const nameById = new Map(diagram.nodes.map((n) => [n.id, n.name]));
       return toResult({
         project: { id: project.id, title: project.title },
         nodes: diagram.nodes.map((n) => ({
@@ -180,11 +187,28 @@ export function buildMcpServer(userId: string) {
           hasDelay: e.hasDelay,
           rationale: e.rationale,
         })),
-        loops: loopResult.loops.map((l) => ({
-          polarity: l.polarity,
-          nodeNames: l.nodeNames,
+        dependencies: dependencies.map((d) => ({
+          from: nameById.get(d.fromNodeId) ?? "",
+          to: nameById.get(d.toNodeId) ?? "",
+          polarity: d.polarity,
         })),
-        truncated: loopResult.truncated,
+        loops: loopResult.loops.map((l) => ({
+          id: l.id,
+          label: l.label,
+          polarity: l.polarity,
+          hasDelay: l.hasDelay,
+          derived: l.derived === true,
+          nodeNames: l.nodeNames,
+          edges: l.nodeNames.map((source, i) => ({
+            source,
+            target: l.nodeNames[(i + 1) % l.nodeNames.length],
+          })),
+        })),
+        loopLimit: {
+          truncated: loopResult.truncated,
+          shown: loopResult.loops.length,
+          limit: MAX_LOOPS,
+        },
         lintFindings: lintDiagram(diagram.nodes, diagram.edges),
         archetypeMatches: matchArchetypes(loopResult.loops),
         interviewNotes: guidance.notes,

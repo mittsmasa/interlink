@@ -125,6 +125,51 @@ describe("detectLoops", () => {
     expect(result.loops).toHaveLength(MAX_LOOPS);
   });
 
+  it("上限を超える密な図でも自己ループは落ちない", () => {
+    const ids = ["a", "b", "c", "d", "e", "f"];
+    const nodes = ids.map((id) => node(id));
+    const edges = [
+      ...ids.flatMap((s) =>
+        ids.filter((t) => t !== s).map((t) => edge(`${s}-${t}`, s, t)),
+      ),
+      edge("self-f", "f", "f", "-"),
+    ];
+    const result = detectLoops(nodes, edges);
+    expect(result.truncated).toBe(true);
+    expect(result.loops).toHaveLength(MAX_LOOPS);
+    expect(result.loops[0]).toMatchObject({
+      id: "loop:f",
+      label: "B1",
+      nodeIds: ["f"],
+    });
+  });
+
+  it("打ち切り後も短いループが優先され、ラベルは切り捨て後に振られる", () => {
+    // 5 ノード完全有向グラフ（circuits 84 個 > MAX_LOOPS）に 2 ノードループだけの別成分を足す。
+    // 列挙順に依存せず、長さ 2 のループ（完全グラフ内 10 + 別成分 1）が全て先頭に残る
+    const ids = ["a", "b", "c", "d", "e"];
+    const nodes = [...ids.map((id) => node(id)), node("y"), node("z")];
+    const edges = [
+      ...ids.flatMap((s) =>
+        ids.filter((t) => t !== s).map((t) => edge(`${s}-${t}`, s, t)),
+      ),
+      edge("y-z", "y", "z"),
+      edge("z-y", "z", "y", "-"),
+    ];
+    const result = detectLoops(nodes, edges);
+    expect(result.truncated).toBe(true);
+    expect(result.loops).toHaveLength(MAX_LOOPS);
+    const twoNodeLoops = result.loops.filter((l) => l.nodeIds.length === 2);
+    expect(twoNodeLoops).toHaveLength(11);
+    expect(result.loops.slice(0, 11)).toEqual(twoNodeLoops);
+    expect(result.loops.map((l) => l.id)).toContain("loop:y→z");
+    // 極性ごとの連番が 1 から欠番なく続く
+    const bLabels = result.loops
+      .filter((l) => l.polarity === "B")
+      .map((l) => l.label);
+    expect(bLabels).toEqual(bLabels.map((_, i) => `B${i + 1}`));
+  });
+
   describe("式由来（derived）リンクの取り込み", () => {
     // 式由来エッジ（極性 null もありうる・derived フラグ付き）
     const dep = (

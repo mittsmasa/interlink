@@ -53,7 +53,7 @@ function fatigueModel() {
 }
 
 describe("simulate", () => {
-  it("設計ノートの計算例どおり疲労が 30→34→38→42 と推移する", () => {
+  it("設計ノートの計算例どおり疲労が 30→34→38→42→46 と推移する", () => {
     const { nodes, edges } = fatigueModel();
     const result = simulate(nodes, edges, { dt: 1, steps: 4 });
     expect(result.ok).toBe(true);
@@ -63,12 +63,29 @@ describe("simulate", () => {
     expect(fatigue[1]).toBeCloseTo(34, 6);
     expect(fatigue[2]).toBeCloseTo(38, 6);
     expect(fatigue[3]).toBeCloseTo(42, 6);
+    expect(fatigue[4]).toBeCloseTo(46, 6);
     // t=0 のスナップショットは開始時点の stock + そこから計算した flow/aux
     expect(result.series[0].ミス率).toBeCloseTo(0.3, 6);
     expect(result.series[0].残業時間).toBeCloseTo(14, 6);
     expect(result.series[0].残業増).toBeCloseTo(7, 6);
     expect(result.series[0].回復).toBeCloseTo(3, 6);
-    expect(result.series).toHaveLength(4);
+    // t=0..steps の steps+1 件
+    expect(result.series).toHaveLength(5);
+  });
+
+  it("最終スナップショット（t=steps）は最後の stock 更新後の値と、そこから再評価した flow/aux を持つ", () => {
+    const { nodes, edges } = fatigueModel();
+    const result = simulate(nodes, edges, { dt: 1, steps: 4 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const last = result.series.at(-1);
+    expect(last?.t).toBe(4);
+    expect(last?.疲労).toBeCloseTo(46, 6);
+    // 疲労=46 から再評価: ミス率 0.46 / 残業時間 8+9.2 / 残業増 8.6 / 回復 4.6
+    expect(last?.ミス率).toBeCloseTo(0.46, 6);
+    expect(last?.残業時間).toBeCloseTo(17.2, 6);
+    expect(last?.残業増).toBeCloseTo(8.6, 6);
+    expect(last?.回復).toBeCloseTo(4.6, 6);
   });
 
   it("stock がループを断ち切るので CLD 上の循環があっても計算できる", () => {
@@ -206,11 +223,12 @@ describe("simulate", () => {
     const result = simulate(nodes, edges, { dt: 1, steps: 3 });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    // 複利: 100 → 110 → 121
+    // 複利: 100 → 110 → 121 → 133.1（3 回更新した最終値まで入る）
     expect(result.series.map((s) => s.残高)).toEqual([
       expect.closeTo(100, 6),
       expect.closeTo(110, 6),
       expect.closeTo(121, 6),
+      expect.closeTo(133.1, 6),
     ]);
     expect(result.series.every((s) => s.金利 === 0.1)).toBe(true);
   });
