@@ -339,7 +339,7 @@ export function buildMcpServer(userId: string) {
       }
 
       const before = {
-        loops: detectLoops(current.nodes, current.edges).loops,
+        loops: detectLoops(current.nodes, buildLoopEdges(current)).loops,
         findings: lintDiagram(current.nodes, current.edges),
       };
       await applyMutationPlan(projectId, plan);
@@ -348,7 +348,7 @@ export function buildMcpServer(userId: string) {
       const saved = (await findOwnedProject(projectId, userId)) ?? project;
       const guidance = deriveGuidance(saved, after);
       const structure = diffStructure(before, {
-        loops: detectLoops(after.nodes, after.edges).loops,
+        loops: detectLoops(after.nodes, buildLoopEdges(after)).loops,
         findings: lintDiagram(after.nodes, after.edges),
       });
       return toResult({
