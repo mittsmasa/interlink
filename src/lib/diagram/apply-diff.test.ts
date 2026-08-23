@@ -108,6 +108,55 @@ describe("planDiagramMutation", () => {
     ]);
   });
 
+  it("新規エッジの status は省略時 inferred、指定時はその値になる", () => {
+    const result = planDiagramMutation(
+      diagram,
+      diff({
+        upsertEdges: [
+          {
+            source: "疲労",
+            target: "残業時間",
+            polarity: "+",
+            rationale: "推測",
+          },
+          {
+            source: "残業時間",
+            target: "残業時間",
+            polarity: "+",
+            rationale: "本人談",
+            status: "confirmed",
+          },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.createEdges.map((e) => e.status)).toEqual([
+      "inferred",
+      "confirmed",
+    ]);
+  });
+
+  it("既存エッジの更新で status を省略すると現状維持（キーを持たない）", () => {
+    const base = {
+      source: "残業時間",
+      target: "疲労",
+      polarity: "+" as const,
+      rationale: "見直し",
+    };
+    const omitted = planDiagramMutation(diagram, diff({ upsertEdges: [base] }));
+    expect(omitted.ok && omitted.plan.updateEdges[0]).not.toHaveProperty(
+      "status",
+    );
+    const given = planDiagramMutation(
+      diagram,
+      diff({ upsertEdges: [{ ...base, status: "disputed" }] }),
+    );
+    expect(given.ok && given.plan.updateEdges[0]).toMatchObject({
+      status: "disputed",
+    });
+  });
+
   it("参照先のない変数へのエッジは除外され warning になる", () => {
     const result = planDiagramMutation(
       diagram,

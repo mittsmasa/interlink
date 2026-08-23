@@ -322,6 +322,7 @@ export function buildMcpServer(userId: string) {
           polarity: e.polarity,
           hasDelay: e.hasDelay,
           rationale: e.rationale,
+          status: e.status,
         })),
         dependencies: dependencies.map((d) => ({
           from: nameById.get(d.fromNodeId) ?? "",
@@ -345,7 +346,10 @@ export function buildMcpServer(userId: string) {
           shown: loopResult.loops.length,
           limit: MAX_LOOPS,
         },
-        lintFindings: lintDiagram(diagram.nodes, diagram.edges),
+        lintFindings: lintDiagram(diagram.nodes, diagram.edges, {
+          loops: loopResult.loops,
+          confirmedLoopIds: guidance.notes.confirmedLoopIds,
+        }),
         archetypeMatches: matchArchetypes(loopResult.loops),
         interviewNotes: guidance.notes,
         interview: { phase: guidance.phase, agenda: guidance.agenda },

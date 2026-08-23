@@ -30,6 +30,13 @@ export type Polarity = (typeof POLARITIES)[number];
 export const NODE_KINDS = ["stock", "flow", "auxiliary", "constant"] as const;
 export type NodeKind = (typeof NODE_KINDS)[number];
 
+/**
+ * リンクの確からしさ。inferred = AI や推論で置いた仮説 / confirmed = ユーザーが実感として
+ * 語った / disputed = ユーザーが否定・疑問視した。ループの最弱リンク特定に使う
+ */
+export const EDGE_STATUSES = ["inferred", "confirmed", "disputed"] as const;
+export type EdgeStatus = (typeof EDGE_STATUSES)[number];
+
 // ============================================================
 // Better Auth テーブル
 // ============================================================
@@ -401,6 +408,9 @@ export const edges = sqliteTable(
       .notNull()
       .default(false),
     rationale: text("rationale").notNull(),
+    status: text("status", { enum: EDGE_STATUSES })
+      .notNull()
+      .default("inferred"),
     createdAt: integer("created_at")
       .notNull()
       .$defaultFn(() => Date.now()),

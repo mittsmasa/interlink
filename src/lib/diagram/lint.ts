@@ -1,8 +1,10 @@
+import type { EdgeStatus } from "@/db/schema";
 import {
   collectReferencedNames,
   deriveDependencies,
   isCausallyLinked,
 } from "./dependencies";
+import type { Loop } from "./loops";
 
 export type LintSeverity = "warning" | "info";
 
@@ -14,7 +16,9 @@ export type LintRule =
   | "flow-without-stock"
   | "stock-without-flow"
   | "stock-to-stock-edge"
-  | "undefined-reference";
+  | "undefined-reference"
+  | "speculative-link"
+  | "bidirectional-link";
 
 export type LintFinding = {
   rule: LintRule;
@@ -30,7 +34,23 @@ type LintNode = {
   kind?: string | null;
   expression?: string | null;
 };
-type LintEdge = { id: string; sourceNodeId: string; targetNodeId: string };
+type LintEdge = {
+  id: string;
+  sourceNodeId: string;
+  targetNodeId: string;
+  /** 未指定（旧 fixture 等）は確からしさを判定しない */
+  status?: EdgeStatus;
+};
+
+/**
+ * ループ文脈を要するルール（speculative-link）のための追加入力。
+ * ループは保存せず毎回導出するため、呼び出し側で detectLoops した結果を渡す
+ */
+export type LintOptions = {
+  loops?: readonly Loop[];
+  /** ユーザーが実感で確かめたループ ID（InterviewNotes.confirmedLoopIds） */
+  confirmedLoopIds?: readonly string[];
+};
 
 /**
  * 変数名に含まれていたら警告する方向語。
@@ -60,6 +80,7 @@ const DIRECTION_WORDS = [
 export function lintDiagram(
   nodes: LintNode[],
   edges: LintEdge[],
+  options: LintOptions = {},
 ): LintFinding[] {
   const warnings: LintFinding[] = [];
   const infos: LintFinding[] = [];
@@ -122,6 +143,8 @@ export function lintDiagram(
       nodeIds: [dep.toNodeId],
     });
   }
+
+  infos.push(...lintEdgeStatus(nodes, edges, options));
 
   return [...warnings, ...infos];
 }
@@ -192,4 +215,63 @@ function lintStockFlow(nodes: LintNode[], edges: LintEdge[]): LintFinding[] {
   }
 
   return findings;
+}
+
+// ============================================================
+// リンクの確からしさ・双方向リンク（確認フロー向けのルール）
+// ============================================================
+
+/**
+ * - speculative-link: status が inferred のまま、確認済みループのどれにも入っていないリンク。
+ *   確認済みループが 1 つもない段階では出さない（全リンクが inferred の初期ドラフトで
+ *   status の重複表示にしかならないため）
+ * - bidirectional-link: A→B と B→A が両方ある。2 ノード R ループになりがちで、
+ *   実際は片方が先に動く・間に変数が挟まることが多い
+ */
+function lintEdgeStatus(
+  nodes: LintNode[],
+  edges: LintEdge[],
+  { loops = [], confirmedLoopIds = [] }: LintOptions,
+): LintFinding[] {
+  const infos: LintFinding[] = [];
+  const nameById = new Map(nodes.map((n) => [n.id, n.name]));
+  const nameOf = (id: string) => nameById.get(id) ?? "";
+
+  if (confirmedLoopIds.length > 0) {
+    const confirmed = new Set(confirmedLoopIds);
+    const confirmedEdgeIds = new Set(
+      loops.filter((l) => confirmed.has(l.id)).flatMap((l) => l.edgeIds),
+    );
+    for (const edge of edges) {
+      if (edge.status !== "inferred" || confirmedEdgeIds.has(edge.id)) continue;
+      infos.push({
+        rule: "speculative-link",
+        severity: "info",
+        message: `「${nameOf(edge.sourceNodeId)}→${nameOf(edge.targetNodeId)}」は推測のままで、確認済みのループにも入っていません。実感と合うか確かめては?`,
+        edgeIds: [edge.id],
+      });
+    }
+  }
+
+  const edgeByPair = new Map(
+    edges.map((e) => [`${e.sourceNodeId}→${e.targetNodeId}`, e]),
+  );
+  const reported = new Set<string>();
+  for (const edge of edges) {
+    if (edge.sourceNodeId === edge.targetNodeId) continue;
+    const reverse = edgeByPair.get(`${edge.targetNodeId}→${edge.sourceNodeId}`);
+    if (!reverse || reported.has(reverse.id)) continue;
+    reported.add(edge.id);
+    const a = nameOf(edge.sourceNodeId);
+    const b = nameOf(edge.targetNodeId);
+    infos.push({
+      rule: "bidirectional-link",
+      severity: "info",
+      message: `「${a}」と「${b}」が互いに影響し合う 2 変数のループになっています。どちらが先に動きますか? 間に挟まる変数はありませんか?`,
+      nodeIds: [edge.sourceNodeId, edge.targetNodeId],
+      edgeIds: [edge.id, reverse.id],
+    });
+  }
+
+  return infos;
 }

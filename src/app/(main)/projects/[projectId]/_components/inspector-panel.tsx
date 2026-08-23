@@ -1,13 +1,18 @@
 "use client";
 
-import { XIcon } from "@phosphor-icons/react";
+import {
+  CheckCircleIcon,
+  QuestionIcon,
+  WarningCircleIcon,
+  XIcon,
+} from "@phosphor-icons/react";
 import { useState, useTransition } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import type { NodeKind, Polarity } from "@/db/schema";
+import type { EdgeStatus, NodeKind, Polarity } from "@/db/schema";
 import type { Diagram, DiagramEdge, DiagramNode } from "@/lib/queries/diagrams";
 import { cn } from "@/lib/utils";
 import { deleteEdge, deleteNode, updateEdge, updateNode } from "../_actions";
@@ -246,6 +251,7 @@ function EdgeForm({
   const [polarity, setPolarity] = useState<Polarity>(edge.polarity);
   const [hasDelay, setHasDelay] = useState(edge.hasDelay);
   const [rationale, setRationale] = useState(edge.rationale);
+  const [status, setStatus] = useState<EdgeStatus>(edge.status);
   const [isPending, startTransition] = useTransition();
 
   const nameOf = (id: string) =>
@@ -257,6 +263,7 @@ function EdgeForm({
         polarity,
         hasDelay,
         rationale,
+        status,
       });
       if (result.ok) {
         toast.success("リンクを更新しました");
@@ -309,6 +316,19 @@ function EdgeForm({
         遅れがある（∥）
       </label>
       <div className="space-y-1.5">
+        <Label>確からしさ</Label>
+        <div className="flex gap-1.5">
+          {EDGE_STATUS_OPTIONS.map((option) => (
+            <StatusButton
+              key={option.value}
+              option={option}
+              active={status === option.value}
+              onClick={() => setStatus(option.value)}
+            />
+          ))}
+        </div>
+      </div>
+      <div className="space-y-1.5">
         <Label htmlFor="edge-rationale">因果の根拠</Label>
         <Textarea
           id="edge-rationale"
@@ -347,6 +367,43 @@ function PolarityButton({
       )}
     >
       {label}
+    </button>
+  );
+}
+
+const EDGE_STATUS_OPTIONS: {
+  value: EdgeStatus;
+  label: string;
+  Icon: typeof QuestionIcon;
+}[] = [
+  { value: "inferred", label: "推測", Icon: QuestionIcon },
+  { value: "confirmed", label: "確認済み", Icon: CheckCircleIcon },
+  { value: "disputed", label: "異議あり", Icon: WarningCircleIcon },
+];
+
+function StatusButton({
+  option,
+  active,
+  onClick,
+}: {
+  option: (typeof EDGE_STATUS_OPTIONS)[number];
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={cn(
+        "flex flex-1 items-center justify-center gap-1 rounded-md border px-2 py-1.5 font-serif text-sm transition-colors",
+        active
+          ? "border-ink bg-ink/10 text-ink"
+          : "text-muted-foreground hover:bg-accent",
+      )}
+    >
+      <option.Icon className="size-3.5" aria-hidden />
+      {option.label}
     </button>
   );
 }

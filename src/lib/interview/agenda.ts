@@ -1,3 +1,4 @@
+import type { EdgeStatus } from "@/db/schema";
 import type { Loop } from "@/lib/diagram/loops";
 import { BEHAVIOR_PATTERN_LABELS, type InterviewNotes } from "./notes";
 import type { InterviewPhase } from "./phase";
@@ -9,9 +10,62 @@ const MAX_ENDPOINT_ITEMS = 3;
 
 type AgendaInput = {
   nodes: { id: string; name: string }[];
-  edges: { sourceNodeId: string; targetNodeId: string }[];
+  edges: {
+    /** 最弱リンクの特定に使う。省略した呼び出し（旧 fixture）ではその項目が出ないだけ */
+    id?: string;
+    sourceNodeId: string;
+    targetNodeId: string;
+    status?: EdgeStatus;
+  }[];
   loops: readonly Loop[];
 };
+
+/** 最弱リンクの優先順（先ほど弱い） */
+const WEAKNESS_ORDER: EdgeStatus[] = ["disputed", "inferred", "confirmed"];
+
+/**
+ * 確認済みループの中でまだ確かでないリンクを拾う。「ループに納得した」は輪全体の印象で、
+ * 個々のリンクは推測のままのことがあるため、ループごとの最弱リンク（disputed > inferred）を
+ * 具体的に問う項目にする。確認済みループ 1 つにつき 1 件
+ */
+function buildWeakLinkItems(
+  nodes: AgendaInput["nodes"],
+  edges: AgendaInput["edges"],
+  loops: readonly Loop[],
+  confirmedLoopIds: readonly string[],
+): string[] {
+  const confirmed = new Set(confirmedLoopIds);
+  const edgeById = new Map(
+    edges.flatMap((e) => (e.id ? [[e.id, e] as const] : [])),
+  );
+  const nameById = new Map(nodes.map((n) => [n.id, n.name]));
+  const items: string[] = [];
+  for (const loop of loops) {
+    if (!confirmed.has(loop.id)) continue;
+    const members = loop.edgeIds.flatMap((id) => {
+      const edge = edgeById.get(id);
+      return edge?.status ? [edge] : [];
+    });
+    const inferredCount = members.filter((e) => e.status === "inferred").length;
+    const weakest = members
+      .filter((e) => e.status !== "confirmed")
+      .sort(
+        (a, b) =>
+          WEAKNESS_ORDER.indexOf(a.status as EdgeStatus) -
+          WEAKNESS_ORDER.indexOf(b.status as EdgeStatus),
+      )[0];
+    if (!weakest) continue;
+    const link = `${nameById.get(weakest.sourceNodeId) ?? ""}→${nameById.get(weakest.targetNodeId) ?? ""}`;
+    const weakestLabel =
+      weakest.status === "disputed" ? "ユーザーが疑問視した" : "推測のままの";
+    const countText =
+      inferredCount > 0 ? `推測のままのリンクが ${inferredCount} 本ある。` : "";
+    items.push(
+      `確認済みのループ ${loop.label} の中に${countText}最も弱いのは${weakestLabel}「${link}」。「他の条件が同じなら、${nameById.get(weakest.sourceNodeId) ?? ""}が増えると${nameById.get(weakest.targetNodeId) ?? ""}はどうなりますか?」と確かめ、実感と合えば status を confirmed に、違えば disputed にして張り直す`,
+    );
+  }
+  return items;
+}
 
 /** 原因 or 影響が未接続の端点ノードを「次に埋める所」として並べる */
 function buildEndpointItems(
@@ -91,7 +145,12 @@ export function buildInterviewAgenda(
     );
   }
 
-  // 2. 挙動と構造の不整合: 構造から予想される挙動（R=増殖 / B+遅れ=振動）と実挙動を突き合わせる
+  // 2. 確認済みループの最弱リンク: 輪として納得していても個々のリンクが推測のままなら確かめる
+  items.push(
+    ...buildWeakLinkItems(nodes, edges, loops, notes.confirmedLoopIds),
+  );
+
+  // 3. 挙動と構造の不整合: 構造から予想される挙動（R=増殖 / B+遅れ=振動）と実挙動を突き合わせる
   if (notes.behavior) {
     const pattern = notes.behavior.pattern;
     const hasReinforcing = loops.some((l) => l.polarity === "R");
@@ -113,7 +172,7 @@ export function buildInterviewAgenda(
     }
   }
 
-  // 3. 端点ノード: 原因や影響が未接続の変数を埋める
+  // 4. 端点ノード: 原因や影響が未接続の変数を埋める
   items.push(...buildEndpointItems(nodes, edges));
 
   return items.slice(0, MAX_AGENDA_ITEMS);

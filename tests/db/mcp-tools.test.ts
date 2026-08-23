@@ -131,6 +131,7 @@ describe("MCP tools", () => {
     });
     const diagram = JSON.parse(textOf(read)) as {
       nodes: { name: string }[];
+      edges: { source: string; target: string; status: string }[];
       dependencies: { from: string; to: string; polarity: string | null }[];
       loops: {
         id: string;
@@ -149,6 +150,11 @@ describe("MCP tools", () => {
       "疲労",
     ]);
     expect(diagram.dependencies).toEqual([]);
+    // 確からしさは既定 inferred で応答に含まれる
+    expect(diagram.edges.map((e) => e.status)).toEqual([
+      "inferred",
+      "inferred",
+    ]);
     // 正リンク 2 本のループ → 自己強化（R）。confirmedLoopIds に使える id と辿れる edges を返す
     expect(diagram.loops).toHaveLength(1);
     const [loop] = diagram.loops;

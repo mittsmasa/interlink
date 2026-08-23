@@ -1,4 +1,4 @@
-import type { NodeKind } from "@/db/schema";
+import type { EdgeStatus, NodeKind } from "@/db/schema";
 import type { DiagramDiff } from "./diff-schema";
 import { validateExpressionStructure } from "./simulate";
 
@@ -38,12 +38,15 @@ export type MutationPlan = {
     polarity: "+" | "-";
     hasDelay: boolean;
     rationale: string;
+    status: EdgeStatus;
   }[];
   updateEdges: {
     id: string;
     polarity: "+" | "-";
     hasDelay: boolean;
     rationale: string;
+    /** 省略時は現状維持（適用側で列を触らない） */
+    status?: EdgeStatus;
   }[];
   deleteEdgeIds: string[];
   /** 不整合のため除外・縮退した操作（AI へのフィードバックに使う） */
@@ -376,6 +379,7 @@ export function planDiagramMutation(
         polarity: edge.polarity,
         hasDelay: edge.hasDelay ?? false,
         rationale: edge.rationale,
+        ...(edge.status !== undefined ? { status: edge.status } : {}),
       });
     } else {
       createEdges.push({
@@ -384,6 +388,7 @@ export function planDiagramMutation(
         polarity: edge.polarity,
         hasDelay: edge.hasDelay ?? false,
         rationale: edge.rationale,
+        status: edge.status ?? "inferred",
       });
     }
   }

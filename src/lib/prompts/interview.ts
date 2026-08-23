@@ -25,8 +25,17 @@ type DiagramSnapshot = {
     polarity: "+" | "-";
     hasDelay: boolean;
     rationale: string;
+    /** リンクの確からしさ。未指定（旧 fixture 等）は表示しない */
+    status?: "inferred" | "confirmed" | "disputed";
   }[];
 };
+
+/** status のプロンプト表示ラベル。inferred は既定なので表示しない */
+const EDGE_STATUS_PROMPT_LABEL = {
+  inferred: "推測",
+  confirmed: "確認済み",
+  disputed: "異議あり",
+} as const;
 
 /** kind のプロンプト表示ラベル */
 const KIND_PROMPT_LABEL: Record<
@@ -57,10 +66,10 @@ export function formatDiagramForPrompt(diagram: DiagramSnapshot) {
       .join(" / ");
     return `- ${n.name}${attrs ? `（${attrs}）` : ""}`;
   });
-  const edgeLines = diagram.edges.map(
-    (e) =>
-      `- ${e.sourceName} →(${e.polarity}${e.hasDelay ? "、遅れ" : ""}) ${e.targetName}: ${e.rationale}`,
-  );
+  const edgeLines = diagram.edges.map((e) => {
+    const status = e.status ? `［${EDGE_STATUS_PROMPT_LABEL[e.status]}］` : "";
+    return `- ${e.sourceName} →(${e.polarity}${e.hasDelay ? "、遅れ" : ""}) ${e.targetName}${status}: ${e.rationale}`;
+  });
   return [
     "### 変数",
     ...nodeLines,
@@ -320,6 +329,7 @@ ${formatNotesForPrompt(notes)}
 - 出来事ではなくパターン（×「システム障害」→ ○「障害の発生頻度」）
 - 時間そのものを原因にしない。変化を駆動している実際の要因を変数にする
 - rationale は必ずユーザーの発言に基づける。推測で補ったリンクはその旨を rationale に書き、対話の中で確かめる
+- リンクの確からしさは status で表す。ユーザーが実感として語ったリンクは confirmed、あなたの推測で置いたリンクは inferred（既定）、ユーザーが否定・疑問視したリンクは disputed にする。確からしさが変わったら、そのリンクを upsertEdges で送り直して status を更新する（削除はユーザーの合意後）
 
 ## 現在の図
 ${formatDiagramForPrompt(diagram)}
