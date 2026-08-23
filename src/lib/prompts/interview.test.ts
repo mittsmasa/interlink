@@ -241,6 +241,6 @@ describe("formatNotesForPrompt", () => {
       { surface: "mcp" },
     );
     expect(mcp).not.toContain("画面左下");
-    expect(mcp).toContain("シミュレーション結果を確認");
+    expect(mcp).toContain("run_simulation で動きを確認");
   });
 });

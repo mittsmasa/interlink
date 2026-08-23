@@ -1,39 +1,7 @@
-import type { SimEdge, SimNode } from "@/lib/diagram/simulate";
-import type { DiagramEdge, DiagramNode } from "@/lib/queries/diagrams";
+import type { SimNode } from "@/lib/diagram/simulate";
 
-/**
- * 図のノードからシミュレーション入力（SimNode）へ写す。
- * kind 未設定（null = CLD のまま）のノードは数値的意味を持たないので除外する。
- * 名前は simulate 側で ASCII プレースホルダへ内部変換されるため、日本語名のまま渡してよい。
- */
-export function toSimNodes(nodes: DiagramNode[]): SimNode[] {
-  const result: SimNode[] = [];
-  for (const node of nodes) {
-    if (node.kind === null) continue;
-    result.push({
-      id: node.id,
-      name: node.name,
-      kind: node.kind,
-      expression: node.expression,
-      initialValue: node.initialValue,
-      value: node.value,
-    });
-  }
-  return result;
-}
-
-/**
- * 図のエッジを SimEdge へ写す。polarity は schema 上 "+"/"-" で SimEdge とそのまま一致する。
- * simulate 側は flow → stock のエッジだけを流入/流出として解釈するため、ここでは全エッジを
- * 素直に渡してよい（関係ないエッジは simulate 内で無視される）。
- */
-export function toSimEdges(edges: DiagramEdge[]): SimEdge[] {
-  return edges.map((edge) => ({
-    sourceNodeId: edge.sourceNodeId,
-    targetNodeId: edge.targetNodeId,
-    polarity: edge.polarity,
-  }));
-}
+// 図 → シミュレーション入力の変換は MCP（run_simulation）とも共用するため lib 側に置く
+export { toSimEdges, toSimNodes } from "@/lib/diagram/sim-inputs";
 
 /**
  * 実行ボタンの出し分け用の軽い判定。stock が 1 つも無ければシミュレーションは成立しない

@@ -127,14 +127,171 @@ describe("simulate", () => {
     expect(result.error.nodeId).toBe("a");
   });
 
-  it("べき乗など四則演算以外の演算子も disallowed", () => {
+  it("べき乗（^）は pow として許可される", () => {
     const result = simulate([aux("a", "甲", "2 ^ 3")], [], {
+      dt: 1,
+      steps: 1,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.series[0].甲).toBe(8);
+  });
+
+  it("剰余など許可外の演算子は disallowed", () => {
+    const result = simulate([aux("a", "甲", "7 % 3")], [], {
       dt: 1,
       steps: 1,
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.type).toBe("disallowed");
+  });
+
+  describe("関数ホワイトリスト", () => {
+    it("min / max / clamp / pow は評価できる", () => {
+      const nodes: SimNode[] = [
+        stock("s", "量", 12),
+        aux(
+          "a",
+          "甲",
+          "clamp(量, 0, 10) + min(量, 3) + max(量, 20) + pow(2, 3)",
+        ),
+      ];
+      const result = simulate(nodes, [], { dt: 1, steps: 1 });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.series[0].甲).toBe(10 + 3 + 20 + 8);
+    });
+
+    it("ホワイトリスト外の関数は名前入りで disallowed", () => {
+      const result = simulate([aux("a", "甲", "floor(1.5)")], [], {
+        dt: 1,
+        steps: 1,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.type).toBe("disallowed");
+      expect(result.error.message).toContain("floor");
+    });
+
+    it("関数名と同名のノードがあっても呼び出しは関数として扱う", () => {
+      const nodes: SimNode[] = [
+        constant("c", "min", 5),
+        aux("a", "甲", "min(min, 2)"),
+      ];
+      const result = simulate(nodes, [], { dt: 1, steps: 1 });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.series[0].甲).toBe(2);
+    });
+
+    it("pow が複素数を返す式は eval エラー", () => {
+      const result = simulate([aux("a", "甲", "pow(-8, 1/3)")], [], {
+        dt: 1,
+        steps: 1,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.type).toBe("eval");
+    });
+  });
+
+  describe("overrides", () => {
+    it("stock の初期値と constant の値を上書きできる（図は変えない）", () => {
+      const nodes: SimNode[] = [
+        stock("s", "残高", 100),
+        constant("r", "利率", 0.1),
+        flow("f", "利息", "残高 * 利率"),
+      ];
+      const edges = [edge("f", "s", "+")];
+      const result = simulate(nodes, edges, {
+        dt: 1,
+        steps: 2,
+        overrides: { 残高: 200, 利率: 0.5 },
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.series[0].残高).toBe(200);
+      expect(result.series[0].利息).toBe(100);
+      expect(result.series[1].残高).toBe(300);
+      // 入力ノードは書き換えない
+      expect(nodes[0].initialValue).toBe(100);
+      expect(nodes[1].value).toBe(0.1);
+    });
+
+    it("flow / auxiliary の上書きは invalid-override", () => {
+      const nodes: SimNode[] = [
+        stock("s", "残高", 100),
+        flow("f", "利息", "残高 * 0.1"),
+      ];
+      const result = simulate(nodes, [edge("f", "s")], {
+        dt: 1,
+        steps: 1,
+        overrides: { 利息: 5 },
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.type).toBe("invalid-override");
+      expect(result.error.refName).toBe("利息");
+      expect(result.error.nodeId).toBe("f");
+    });
+
+    it("図にない名前の上書きは invalid-override", () => {
+      const result = simulate([stock("s", "残高", 100)], [], {
+        dt: 1,
+        steps: 1,
+        overrides: { 存在しない: 1 },
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.type).toBe("invalid-override");
+      expect(result.error.refName).toBe("存在しない");
+    });
+  });
+
+  describe("nonNegativeStocks", () => {
+    const drain = () => ({
+      nodes: [stock("s", "在庫", 5), flow("f", "出荷", "4")],
+      edges: [edge("f", "s", "-")],
+    });
+
+    it("既定では stock は負になれる", () => {
+      const { nodes, edges } = drain();
+      const result = simulate(nodes, edges, { dt: 1, steps: 3 });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.series.map((s) => s.在庫)).toEqual([5, 1, -3, -7]);
+    });
+
+    it("true なら 0 で止まる", () => {
+      const { nodes, edges } = drain();
+      const result = simulate(nodes, edges, {
+        dt: 1,
+        steps: 3,
+        nonNegativeStocks: true,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.series.map((s) => s.在庫)).toEqual([5, 1, 0, 0]);
+    });
+  });
+
+  it("stock が非有限になったら diverged で打ち切る", () => {
+    // flow は有限のまま、stock の加算が倍精度の上限を超えて Infinity になる
+    const nodes: SimNode[] = [
+      stock("s", "量", 1.7e308),
+      flow("f", "増分", "1e308"),
+    ];
+    const result = simulate(nodes, [edge("f", "s", "+")], {
+      dt: 1,
+      steps: 10,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.type).toBe("diverged");
+    expect(result.error.nodeId).toBe("s");
+    expect(result.error.step).toBeGreaterThan(0);
+    expect(result.error.step).toBeLessThanOrEqual(10);
   });
 
   it("未定義の変数参照は undefined-reference", () => {
@@ -281,8 +438,14 @@ describe("validateExpressionStructure", () => {
     expect(validateExpressionStructure("sqrt(x)")?.type).toBe("disallowed");
   });
 
-  it("べき乗など四則演算以外の演算子は disallowed", () => {
-    expect(validateExpressionStructure("2 ^ 3")?.type).toBe("disallowed");
+  it("べき乗とホワイトリストの関数は OK", () => {
+    expect(validateExpressionStructure("2 ^ 3")).toBeNull();
+    expect(validateExpressionStructure("clamp(x - y, 0, 上限)")).toBeNull();
+    expect(validateExpressionStructure("min(a, b) + max(a, b)")).toBeNull();
+  });
+
+  it("許可外の演算子は disallowed", () => {
+    expect(validateExpressionStructure("7 % 3")?.type).toBe("disallowed");
   });
 
   it("構文エラーは parse", () => {

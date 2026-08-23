@@ -71,7 +71,7 @@ export async function buildMcpInterviewPrompt(
   return `${prompt}
 
 ## このセッションでの図の操作
-図とノートの操作は interlink の MCP ツールで行う。対象プロジェクトの projectId は「${project.id}」。update_diagram / update_notes / get_diagram の呼び出しには必ずこの projectId を渡すこと。`
+図とノートの操作は interlink の MCP ツールで行う。対象プロジェクトの projectId は「${project.id}」。update_diagram / update_notes / get_diagram / run_simulation の呼び出しには必ずこの projectId を渡すこと。`
     .replaceAll("updateNotes", "update_notes")
     .replaceAll("updateDiagram", "update_diagram");
 }

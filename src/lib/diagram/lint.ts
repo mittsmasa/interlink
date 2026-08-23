@@ -1,4 +1,8 @@
-import { deriveDependencies, isCausallyLinked } from "./dependencies";
+import {
+  collectReferencedNames,
+  deriveDependencies,
+  isCausallyLinked,
+} from "./dependencies";
 
 export type LintSeverity = "warning" | "info";
 
@@ -6,7 +10,11 @@ export type LintRule =
   | "direction-in-name"
   | "verb-name"
   | "isolated-node"
-  | "missing-dependency-link";
+  | "missing-dependency-link"
+  | "flow-without-stock"
+  | "stock-without-flow"
+  | "stock-to-stock-edge"
+  | "undefined-reference";
 
 export type LintFinding = {
   rule: LintRule;
@@ -97,6 +105,8 @@ export function lintDiagram(
     }
   }
 
+  warnings.push(...lintStockFlow(nodes, edges));
+
   // 式が他ノードを参照しているのに、図にそのリンク（因果エッジ）が無い依存を気づかせる。
   // 依存の真実は式にあるため（simulate と同様）、式から導出して既存エッジと突き合わせる。
   // 同方向の因果エッジが既にあるものは「図に現れている」ので出さない。
@@ -114,4 +124,72 @@ export function lintDiagram(
   }
 
   return [...warnings, ...infos];
+}
+
+/**
+ * SFD（kind 付きノード）の整合ルール。simulate が実行時に黙って無視する・エラーにする
+ * 構造を、実行前に warning として出す。kind が null の CLD には何も出さない。
+ * - flow-without-stock: flow から stock へのエッジが無い（simulate は flow→stock 以外を無視する）
+ * - stock-without-flow: stock に流入/流出する flow が無い（初期値のまま動かない）
+ * - stock-to-stock-edge: stock→stock のエッジ（量は flow を通してしか動かない）
+ * - undefined-reference: 式がどのノード名にも一致しない変数を参照（実行時エラーになる）
+ */
+function lintStockFlow(nodes: LintNode[], edges: LintEdge[]): LintFinding[] {
+  const findings: LintFinding[] = [];
+  const kindById = new Map(nodes.map((n) => [n.id, n.kind ?? null]));
+  const nameById = new Map(nodes.map((n) => [n.id, n.name]));
+  const names = new Set(nodes.map((n) => n.name));
+
+  const flowsWithStock = new Set<string>();
+  const stocksWithFlow = new Set<string>();
+  for (const edge of edges) {
+    const sourceKind = kindById.get(edge.sourceNodeId);
+    const targetKind = kindById.get(edge.targetNodeId);
+    if (sourceKind === "flow" && targetKind === "stock") {
+      flowsWithStock.add(edge.sourceNodeId);
+      stocksWithFlow.add(edge.targetNodeId);
+    }
+    if (sourceKind === "stock" && targetKind === "stock") {
+      findings.push({
+        rule: "stock-to-stock-edge",
+        severity: "warning",
+        message: `「${nameById.get(edge.sourceNodeId)}」→「${nameById.get(edge.targetNodeId)}」は stock 同士のリンクです。stock は flow を通してしか変化しないため、シミュレーションでは無視されます。間に flow を置いては?`,
+        edgeIds: [edge.id],
+      });
+    }
+  }
+
+  for (const node of nodes) {
+    if (node.kind === "flow" && !flowsWithStock.has(node.id)) {
+      findings.push({
+        rule: "flow-without-stock",
+        severity: "warning",
+        message: `flow「${node.name}」から stock へのリンクがありません。どの stock を増減させるかを flow → stock のリンク（+ 流入 / − 流出）で示してください`,
+        nodeIds: [node.id],
+      });
+    }
+    if (node.kind === "stock" && !stocksWithFlow.has(node.id)) {
+      findings.push({
+        rule: "stock-without-flow",
+        severity: "warning",
+        message: `stock「${node.name}」に流入/流出する flow がありません。初期値のまま変化しないので、増減させる flow を置いては?`,
+        nodeIds: [node.id],
+      });
+    }
+    const expr = node.expression?.trim();
+    if (!expr) continue;
+    const unknown = [
+      ...new Set(collectReferencedNames(expr).filter((n) => !names.has(n))),
+    ];
+    if (unknown.length > 0) {
+      findings.push({
+        rule: "undefined-reference",
+        severity: "warning",
+        message: `「${node.name}」の式が図にない変数「${unknown.join("」「")}」を参照しています。変数名を図にある名前に合わせるか、変数を追加してください`,
+        nodeIds: [node.id],
+      });
+    }
+  }
+
+  return findings;
 }

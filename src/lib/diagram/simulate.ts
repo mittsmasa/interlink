@@ -1,4 +1,5 @@
 import {
+  type FunctionNode,
   type MathNode,
   type OperatorNode,
   parse,
@@ -36,10 +37,19 @@ export type SimConfig = {
   dt: number;
   /** 計算ステップ数。>= 1 */
   steps: number;
+  /**
+   * ノード名 → 値の上書き（what-if 用。図は変更しない）。
+   * stock の initialValue と constant の value だけ許可し、flow / auxiliary や
+   * 未知の名前は invalid-override エラーにする
+   */
+  overrides?: Record<string, number>;
+  /** true なら stock を積分した直後に 0 でクランプし、負の量にならないようにする */
+  nonNegativeStocks?: boolean;
 };
 
 export type SimErrorType =
   | "invalid-config"
+  | "invalid-override"
   | "duplicate-name"
   | "invalid-identifier"
   | "missing-field"
@@ -47,7 +57,8 @@ export type SimErrorType =
   | "disallowed"
   | "undefined-reference"
   | "cycle"
-  | "eval";
+  | "eval"
+  | "diverged";
 
 export type SimError = {
   type: SimErrorType;
@@ -56,8 +67,10 @@ export type SimError = {
   nodeId?: string;
   /** 循環に関与したノード ID 列（type === "cycle"） */
   nodeIds?: string[];
-  /** 未定義参照の変数名（type === "undefined-reference"） */
+  /** 未定義参照の変数名（type === "undefined-reference"） / 上書き対象の名前（invalid-override） */
   refName?: string;
+  /** 発散を検出したステップ（type === "diverged"） */
+  step?: number;
 };
 
 /** 1 ステップ分のスナップショット。t と各ノード名 → 値 */
@@ -68,17 +81,34 @@ export type SimResult =
   | { ok: false; error: SimError };
 
 /**
- * 四則演算と単項マイナス/プラスのみ許可（設計ノート 5 章: 評価モードを制限する）。
- * mathjs の OperatorNode.fn 名で判定する。
+ * 四則演算・べき乗・単項マイナス/プラスのみ許可（設計ノート 5 章: 評価モードを制限する）。
+ * mathjs の OperatorNode.fn 名で判定する。`^` は関数 pow と同じ fn 名になる。
  */
 const ALLOWED_OPERATOR_FNS = new Set([
   "add",
   "subtract",
   "multiply",
   "divide",
+  "pow",
   "unaryMinus",
   "unaryPlus",
 ]);
+
+/**
+ * 式で呼べる関数のホワイトリスト。mathjs 組み込み（min / max / pow）に加え、
+ * mathjs に無い clamp は評価 scope へ関数として渡す（SCOPE_FUNCTIONS）。
+ * ユーザー定義関数・代入・行列など、ここに無いものは全て拒否する。
+ */
+export const ALLOWED_FUNCTIONS = ["min", "max", "clamp", "pow"] as const;
+const ALLOWED_FUNCTION_SET: ReadonlySet<string> = new Set(ALLOWED_FUNCTIONS);
+
+/** 許可される式の記法を一文で表した文言（エラーメッセージ / プロンプトで共用） */
+export const EXPRESSION_SYNTAX_NOTE = `四則演算（+ - * /）・べき乗（^）・関数 ${ALLOWED_FUNCTIONS.join("/")} と変数参照のみ`;
+
+/** mathjs 組み込みに無い関数を scope 経由で供給する */
+const SCOPE_FUNCTIONS: Record<string, (...args: number[]) => number> = {
+  clamp: (x, lo, hi) => Math.min(Math.max(x, lo), hi),
+};
 
 /**
  * 参照可能なノード名か。先頭は文字/_/$、以降は文字/数字/_/$。
@@ -105,20 +135,26 @@ export function substituteNames(
 ): { code: string; unknown: string[] } {
   const unknown: string[] = [];
   const code = expr.replace(TOKEN_RE, (token, offset: number, full: string) => {
+    // 直後が `(` の識別子は関数呼び出し。ノード名と同名でも変数参照ではないので
+    // そのまま残し（dependencies.ts と同じ規律）、mathjs パース後の whitelist に委ねる。
+    if (isCallAhead(full, offset + token.length)) return token;
     const placeholder = nameToPlaceholder.get(token);
     if (placeholder) return placeholder;
-    // 直後が `(` の識別子は関数呼び出し。変数参照ではないのでそのまま残し、
-    // mathjs パース後の whitelist（FunctionNode 拒否）に判定を委ねる。
-    if (/^\s*\(/.test(full.slice(offset + token.length))) return token;
     unknown.push(token);
     return token;
   });
   return { code, unknown };
 }
 
+/** 位置 from 以降が空白を挟んで `(` で始まるか（= 直前のトークンが関数呼び出し） */
+function isCallAhead(full: string, from: number): boolean {
+  return /^\s*\(/.test(full.slice(from));
+}
+
 /**
- * パース済み式が四則演算と変数参照だけで構成されるか検証する。
- * 関数呼び出し（FunctionNode）・代入・行列などは拒否し、最初の違反を返す。
+ * パース済み式が許可された記法だけで構成されるか検証する。
+ * 四則演算・べき乗・変数参照・ホワイトリストの関数呼び出しだけを通し、
+ * それ以外（未知の関数・代入・行列など）は最初の違反を返す。
  */
 function findDisallowed(node: MathNode): string | null {
   let violation: string | null = null;
@@ -132,15 +168,19 @@ function findDisallowed(node: MathNode): string | null {
       case "OperatorNode": {
         const fn = (n as OperatorNode).fn;
         if (!ALLOWED_OPERATOR_FNS.has(fn)) {
-          violation = `演算子 ${(n as OperatorNode).op} は使えません（四則演算のみ）`;
+          violation = `演算子 ${(n as OperatorNode).op} は使えません（${EXPRESSION_SYNTAX_NOTE}）`;
         }
         return;
       }
-      case "FunctionNode":
-        violation = "関数は使えません（四則演算と変数参照のみ）";
+      case "FunctionNode": {
+        const name = (n as FunctionNode).fn.name;
+        if (!ALLOWED_FUNCTION_SET.has(name)) {
+          violation = `関数 ${name} は使えません（${EXPRESSION_SYNTAX_NOTE}）`;
+        }
         return;
+      }
       default:
-        violation = "使えない記法が含まれています（四則演算と変数参照のみ）";
+        violation = `使えない記法が含まれています（${EXPRESSION_SYNTAX_NOTE}）`;
     }
   });
   return violation;
@@ -157,17 +197,18 @@ function collectSymbols(node: MathNode): string[] {
 
 /**
  * 式の構文と演算子だけを検証する（保存時の軽い検証用）。参照解決・循環チェックは
- * しない。全識別子トークンをダミーに置換してから parse するので、参照名の有無や
- * 定義順に依存せず、構文と whitelist（四則演算と参照のみ）だけを見る。
- * 関数呼び出し `f(...)` は置換後も FunctionNode として残り disallowed になる。
- * 空文字は OK（null を返す）。
+ * しない。変数参照のトークンをダミーに置換してから parse するので、参照名の有無や
+ * 定義順に依存せず、構文と whitelist だけを見る。関数呼び出し `f(...)` の名前は
+ * 残し、ホワイトリスト外なら disallowed になる。空文字は OK（null を返す）。
  */
 export function validateExpressionStructure(
   expression: string,
 ): SimError | null {
   const expr = expression.trim();
   if (!expr) return null;
-  const code = expr.replace(TOKEN_RE, () => "_x");
+  const code = expr.replace(TOKEN_RE, (token, offset: number, full: string) =>
+    isCallAhead(full, offset + token.length) ? token : "_x",
+  );
   let root: MathNode;
   try {
     root = parse(code);
@@ -416,6 +457,48 @@ export function simulate(
   if ("type" in prepared) return { ok: false, error: prepared };
   const { placeholderByNodeId, stocks, constants, ordered } = prepared;
 
+  // overrides は stock の初期値 / constant の値にだけ効く（図は変更しない）
+  const overrides = new Map<string, number>();
+  if (config.overrides) {
+    const byName = new Map(nodes.map((n) => [n.name, n]));
+    for (const [name, value] of Object.entries(config.overrides)) {
+      const node = byName.get(name);
+      if (!node) {
+        return {
+          ok: false,
+          error: {
+            type: "invalid-override",
+            message: `上書き対象「${name}」は図にありません`,
+            refName: name,
+          },
+        };
+      }
+      if (node.kind !== "stock" && node.kind !== "constant") {
+        return {
+          ok: false,
+          error: {
+            type: "invalid-override",
+            message: `「${name}」は ${node.kind} なので上書きできません（stock の初期値と constant の値のみ）`,
+            nodeId: node.id,
+            refName: name,
+          },
+        };
+      }
+      if (!Number.isFinite(value)) {
+        return {
+          ok: false,
+          error: {
+            type: "invalid-override",
+            message: `「${name}」の上書き値は有限の数値である必要があります`,
+            nodeId: node.id,
+            refName: name,
+          },
+        };
+      }
+      overrides.set(node.id, value);
+    }
+  }
+
   const kindById = new Map(nodes.map((n) => [n.id, n.kind]));
 
   // 各 stock に流入/流出する flow エッジを集める（source が flow のものだけ）。
@@ -433,15 +516,19 @@ export function simulate(
     target.push({ flowPlaceholder, sign: edge.polarity === "+" ? 1 : -1 });
   }
 
-  // scope を初期化（constant と stock の初期値）。キーはプレースホルダ。
-  const scope: Record<string, number> = {};
+  // scope を初期化（constant と stock の初期値。overrides があればそちらを優先）。
+  // キーはプレースホルダ。ホワイトリスト関数のうち mathjs に無いものも scope で供給する。
+  const scope: Record<string, number | ((...args: number[]) => number)> = {
+    ...SCOPE_FUNCTIONS,
+  };
+  const num = (ph: string) => scope[ph] as number;
   for (const c of constants) {
     const ph = placeholderByNodeId.get(c.id);
-    if (ph) scope[ph] = c.value as number;
+    if (ph) scope[ph] = overrides.get(c.id) ?? (c.value as number);
   }
   for (const s of stocks) {
     const ph = placeholderByNodeId.get(s.id);
-    if (ph) scope[ph] = s.initialValue as number;
+    if (ph) scope[ph] = overrides.get(s.id) ?? (s.initialValue as number);
   }
 
   /** scope（プレースホルダ key）をノード名 key のスナップショットへ写す */
@@ -449,7 +536,7 @@ export function simulate(
     const snap: SimSnapshot = { t };
     for (const node of nodes) {
       const ph = placeholderByNodeId.get(node.id);
-      if (ph !== undefined) snap[node.name] = scope[ph];
+      if (ph !== undefined) snap[node.name] = num(ph);
     }
     return snap;
   };
@@ -492,9 +579,24 @@ export function simulate(
       let rate = 0;
       for (const { flowPlaceholder, sign } of inflowsByStockId.get(s.id) ??
         []) {
-        rate += sign * scope[flowPlaceholder];
+        rate += sign * num(flowPlaceholder);
       }
-      next.set(ph, scope[ph] + rate * config.dt);
+      let value = num(ph) + rate * config.dt;
+      // 発散ガード: stock が非有限（Infinity / NaN）になったら打ち切る。
+      // 以降のステップは意味を持たず、flow の評価エラーより原因が分かりにくいため
+      if (!Number.isFinite(value)) {
+        return {
+          ok: false,
+          error: {
+            type: "diverged",
+            message: `stock「${s.name}」が t=${t + 1} で発散しました（dt を小さくするか、式や初期値を見直してください）`,
+            nodeId: s.id,
+            step: t + 1,
+          },
+        };
+      }
+      if (config.nonNegativeStocks && value < 0) value = 0;
+      next.set(ph, value);
     }
 
     // ③ stock を一斉に書き換える
