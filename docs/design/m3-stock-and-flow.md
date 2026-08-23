@@ -1,6 +1,6 @@
 # M3: ストック&フロー + シミュレーション 設計ノート
 
-ステータス: 実装済み（schema 拡張 / kind 昇格 / 式検証 / simulate / グラフ / MCP ツール）。本ノートは背景の考え方と、実装で確定した挙動の両方を記す。確定 DDL・関数シグネチャはコードを正とし、ここでは「なぜそうなっているか」を残す。
+ステータス: 実装済み（schema 拡張 / kind 昇格 / 式検証 / simulate / グラフ / MCP ツール / 遅れ）。本ノートは背景の考え方と、実装で確定した挙動の両方を記す。確定 DDL・関数シグネチャはコードを正とし、ここでは「なぜそうなっているか」を残す。
 読者: M3 を触る人。前提知識（システムダイナミクス）は本ノートで補う。
 
 実装の対応表:
@@ -12,6 +12,7 @@
 | 式からの情報リンク導出（依存 / 極性） | [`src/lib/diagram/dependencies.ts`](../../src/lib/diagram/dependencies.ts) / [`dependency-polarity.ts`](../../src/lib/diagram/dependency-polarity.ts) |
 | SFD 整合 lint | [`src/lib/diagram/lint.ts`](../../src/lib/diagram/lint.ts) `lintStockFlow` |
 | シミュレーションエンジン | [`src/lib/diagram/simulate.ts`](../../src/lib/diagram/simulate.ts) |
+| 遅れ（hasDelay × delaySteps / smooth / delay） | [`simulate.ts`](../../src/lib/diagram/simulate.ts) `DELAY_NOTE` |
 | 図 → simulate 入力の変換 | [`src/lib/diagram/sim-inputs.ts`](../../src/lib/diagram/sim-inputs.ts) |
 | 結果の要約（BOT 語彙） | [`src/lib/diagram/sim-summary.ts`](../../src/lib/diagram/sim-summary.ts) |
 | MCP ツール `run_simulation` / `compare_scenarios` | [`src/lib/mcp/tools.ts`](../../src/lib/mcp/tools.ts) |
@@ -144,6 +145,7 @@ value: real("value"),                // constant 用。固定値
 - 四則演算 `+ - * /`、単項 `+ -`、べき乗 `^`
 - 変数参照（図にあるノード名）
 - 関数 `min` / `max` / `clamp(x, lo, hi)` / `pow`。`clamp` は mathjs に無いので評価 scope に関数として渡す
+- 関数 `smooth(x, tau)` / `delay(x, tau)`（引数 2 つ固定）。これらは scope の関数ではなく、`prepare` が隠れストックへ書き換える（7 章「遅れ」）
 
 結果が数値でない（`pow(-8, 1/3)` の複素数など）式は `eval` エラーになる。
 
@@ -275,9 +277,34 @@ simulate が使うエッジは **flow → stock** だけ（極性 + = 流入 / �
 
 - `overrides`: ノード名 → 値。**stock の初期値と constant の値だけ** 上書きできる。図は変更しない（what-if 用）。flow/auxiliary や未知の名前は `invalid-override`
 - `nonNegativeStocks`: true なら stock を積分した直後に 0 でクランプ（在庫・人数など負が無意味な量に）
+- `delaySteps`: `hasDelay` 付きリンクを何ステップ遅らせるか（既定 1、1 以上の整数）。「遅れ」節を参照
 - 発散ガード: stock が非有限（Infinity / NaN）になったら `{ type: "diverged", nodeId, step }` で打ち切る。dt 過大や正帰還の暴走に気づかせるため
 
 `dt` / `steps` は永続化せず、UI は useState、MCP は引数（既定 dt=1 / steps=20）で持つ。
+
+### 遅れ（`hasDelay` / `smooth` / `delay`）
+
+CLD では「効くまでに時間がかかる」リンクに遅れマークを付ける。遅れのある B ループは、行き過ぎては戻る**振動**として現れる。M3 ではこれを 2 つの入り口で数値に効かせる。使い分けは「粗いか、時定数を持つか」。
+
+| | リンクの遅れ | 式の関数 |
+|---|---|---|
+| 書き方 | エッジの `hasDelay` + 実行時の `delaySteps` | `smooth(値, 時定数)` / `delay(値, 時定数)` |
+| 遅れ方 | 値をそのまま n ステップずらす（パイプライン遅延） | 1 次遅れ（なまして追従する） |
+| 粒度 | 実行単位で一律 | 呼び出しごとに時定数を変えられる |
+| 出どころ | CLD の遅れマークをそのまま使える | 式を書くときに明示する |
+
+**リンクの遅れ**は、CLD 段階で付けた遅れマークを SFD でもそのまま活かすための粗い遅れ。`delaySteps`（既定 1）は永続化せず、UI は入力欄、MCP は引数で受ける。効く先は 2 つ:
+
+- flow → stock の遅れ: stock を積むとき、いまの流量ではなく `delaySteps` 前の流量を使う
+- 式の参照リンクの遅れ: 式が参照している変数の値を `delaySteps` 前のものにする（例: 「認識在庫 = 在庫」のリンクに遅れを付けると、認識が n ステップ遅れる）
+
+実装は既存の `series` を引くだけ。`series[i]` は t=i 時点の値なので、`series[max(0, t - delaySteps)]` を読めば「履歴が足りない間は t=0 の値が続いていた」とみなせる（Vensim の DELAY FIXED と同じ慣例）。専用のバッファは持たない。
+
+参照リンクの遅れは、式の AST 中のその変数を内部エイリアスへ置き換えて実現する。**依存の抽出は置き換える前に済ませる**ので、遅れの有無で評価順序（トポロジカル順）は変わらない。遅れを入れても flow/auxiliary の循環は循環のままで、ループは従来どおり stock を通って閉じる。
+
+**式の関数** `smooth(x, tau)` / `delay(x, tau)` は 1 次遅れ（`ds/dt = (x − s) / tau`）。中身は同じで、smooth = 情報の平滑化 / delay = 物質の遅れ、という意味づけだけが違う。呼び出し 1 つにつき隠れストックを 1 つ持ち、stock と同じタイミング（②③ の同時更新）で積む。初期値は t=0 の入力値（最初は釣り合っている前提）。入れ子（`smooth(smooth(x,2),2)`）は内側から順に隠れストック化される。時定数が 0 以下なら `eval` エラー、隠れストックが非有限になれば `diverged`。
+
+隠れストックは `nonNegativeStocks` のクランプ対象ではない（均している対象が負を取りうるため）。
 
 ### 結果の要約（`sim-summary.ts`）
 
@@ -298,16 +325,17 @@ simulate が使うエッジは **flow → stock** だけ（極性 + = 流入 / �
 4. シミュレーションエンジン（`simulate.ts`、純粋関数）— 済
 5. グラフ描画（クライアントでインタラクティブに再計算）— 済（SVG 自前描画。ライブラリは使っていない）
 6. MCP から回す（`run_simulation` / `compare_scenarios`、要約、SFD lint、関数ホワイトリスト）— 済
+7. 遅れの反映（`hasDelay` × `delaySteps` のパイプライン遅延、式の `smooth` / `delay`）— 済
 
 ### 決まったこと
 
 - `dt` / `steps` は永続化しない（UI は一時設定、MCP は引数）
 - 初期値の上書き・シナリオ比較は `overrides` として**実行時の引数**で受け、保存しない
+- 遅れは 2 段構え。CLD の `hasDelay` は実行時の `delaySteps` で一律に効かせ、リンクごとの時定数が要るときは式の `smooth` / `delay` を使う。リンクごとの遅れ量は列として持たない
 
 ### Open Questions（未決）
 
 - `dt` / `steps` / シナリオの永続化（今は毎回渡す）
-- `hasDelay` をシミュレーションへ反映する方法（`delaySteps` パイプラインか `smooth/delay` 関数か。現状は未反映）
 - 単位の整合チェックをどこまでやるか（`unit` 列はまだどのロジックも読まない）
 - 式エディタの UX（補完、ノード名参照の入力支援）
 - 数値積分の精度（オイラー法のまま。RK4 が要るかは実例待ち）
@@ -318,7 +346,8 @@ simulate が使うエッジは **flow → stock** だけ（極性 + = 流入 / �
 
 - 同時更新: stock が複数なら「全 stock の次の値を計算 → 一斉更新」を守る（7 章）
 - dt 過大: オイラー法は `dt` が大きいと発散・振動する。小さくするか RK4 へ
-- mathjs 制限モード: 四則演算・べき乗・参照・ホワイトリスト関数（min/max/clamp/pow）に絞る。関数定義などを許さない。許可記法を増やすときは `simulate.ts` の whitelist と、`diff-schema.ts` / `prompts/interview.ts` の AI 向け文言を同時に更新する
+- mathjs 制限モード: 四則演算・べき乗・参照・ホワイトリスト関数（min/max/clamp/pow/smooth/delay）に絞る。関数定義などを許さない。許可記法を増やすときは `simulate.ts` の whitelist と、`diff-schema.ts` / `prompts/interview.ts` の AI 向け文言を同時に更新する
+- 遅れの二重掛け: 同じ関係にリンクの `hasDelay` と式の `smooth` の両方を掛けると遅れが重なる。どちらか一方で表す
 - 循環の扱い: flow/auxiliary の依存は非循環（DAG）。ループは stock を通って閉じる。循環をエラーにする際は「stock を挟まないと閉じない」とユーザーに伝える
 - 発散: stock が非有限になったら `diverged` で打ち切る。flow 側が先に非有限になると `eval` エラーになる（どちらも「式か dt を見直す」合図）
 - エッジの黙殺: simulate は flow → stock 以外を無視する。図の上では意味がありそうなエッジが計算に効かないことがあるので、SFD lint の warning を必ず見る
