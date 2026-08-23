@@ -25,16 +25,18 @@ function textOf(result: Awaited<ReturnType<Client["callTool"]>>) {
 }
 
 describe("MCP tools", () => {
-  it("tools/list で 8 ツールが列挙される", async () => {
+  it("tools/list で 10 ツールが列挙される", async () => {
     const user = await createUser();
     const client = await connectClient(user.id);
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
+      "compare_scenarios",
       "create_project",
       "delete_project",
       "export_diagram",
       "get_diagram",
       "list_projects",
+      "run_simulation",
       "update_diagram",
       "update_notes",
       "update_project",
@@ -919,7 +921,7 @@ describe("MCP interview context", () => {
     });
     const text = (result.messages[0].content as { text: string }).text;
     expect(text).not.toContain("画面左下");
-    expect(text).toContain("シミュレーション結果を確認");
+    expect(text).toContain("run_simulation で動きを確認");
   });
 
   it("update_diagram / get_diagram の応答に interview の誘導が同梱される", async () => {
@@ -951,5 +953,266 @@ describe("MCP interview context", () => {
     expect(readPayload.interviewNotes).toHaveProperty("theme");
     expect(readPayload.interview.phase).toBe("draft");
     expect(readPayload.interview.agenda.length).toBeGreaterThan(0);
+  });
+});
+
+describe("MCP simulation tools", () => {
+  /** 疲労モデル（stock 1 / flow 2 / constant 1）を update_diagram で作る */
+  async function createFatigueModel(client: Client, projectId: string) {
+    const update = await client.callTool({
+      name: "update_diagram",
+      arguments: {
+        projectId,
+        diff: {
+          upsertNodes: [
+            { name: "疲労", kind: "stock", initialValue: 30 },
+            { name: "回復率", kind: "constant", value: 0.1 },
+            { name: "残業増", kind: "flow", expression: "疲労 * 0.2" },
+            { name: "回復", kind: "flow", expression: "疲労 * 回復率" },
+          ],
+          upsertEdges: [
+            {
+              source: "残業増",
+              target: "疲労",
+              polarity: "+",
+              rationale: "残業が疲労を積み上げる",
+            },
+            {
+              source: "回復",
+              target: "疲労",
+              polarity: "-",
+              rationale: "休むと疲労が抜ける",
+            },
+          ],
+        },
+      },
+    });
+    expect(update.isError).toBeFalsy();
+  }
+
+  type RunPayload = {
+    ok: boolean;
+    dt?: number;
+    steps?: number;
+    stocks?: {
+      name: string;
+      initial: number;
+      final: number;
+      trend: string;
+      pattern: string;
+    }[];
+    series?: { t: number }[];
+    totalPoints?: number;
+    warnings?: string[];
+    mismatch?: { noted: string } | null;
+    error?: { type: string; refName?: string };
+  };
+
+  it("run_simulation は stock 要約と間引いた series を返す", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+    await createFatigueModel(client, project.id);
+
+    const result = await client.callTool({
+      name: "run_simulation",
+      arguments: { projectId: project.id, steps: 100 },
+    });
+    expect(result.isError).toBeFalsy();
+    const payload = JSON.parse(textOf(result)) as RunPayload;
+    expect(payload.ok).toBe(true);
+    expect(payload.dt).toBe(1);
+    expect(payload.steps).toBe(100);
+    expect(payload.stocks).toHaveLength(1);
+    expect(payload.stocks?.[0]).toMatchObject({
+      name: "疲労",
+      initial: 30,
+      trend: "up",
+      pattern: "increasing",
+    });
+    // 全ステップは返さない（series は t=0..steps の steps+1 点）
+    expect(payload.series?.length).toBeLessThanOrEqual(21);
+    expect(payload.totalPoints).toBe(101);
+    expect(payload.warnings).toEqual([]);
+    expect(payload.mismatch).toBeNull();
+  });
+
+  it("run_simulation はノートの時間挙動と食い違えば mismatch を添える", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+    await createFatigueModel(client, project.id);
+    await client.callTool({
+      name: "update_notes",
+      arguments: {
+        projectId: project.id,
+        notes: {
+          theme: "疲労が抜けない",
+          behavior: {
+            pattern: "oscillating",
+            description: "良くなったり悪くなったり",
+          },
+        },
+      },
+    });
+
+    const result = await client.callTool({
+      name: "run_simulation",
+      arguments: { projectId: project.id },
+    });
+    const payload = JSON.parse(textOf(result)) as RunPayload;
+    expect(payload.ok).toBe(true);
+    expect(payload.mismatch?.noted).toBe("oscillating");
+  });
+
+  it("run_simulation は SimError を構造化して返し、SFD lint の warning を添える", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+    // flow が stock に繋がっていない + 式が未定義変数を参照
+    await client.callTool({
+      name: "update_diagram",
+      arguments: {
+        projectId: project.id,
+        diff: {
+          upsertNodes: [
+            { name: "疲労", kind: "stock", initialValue: 30 },
+            { name: "残業増", kind: "flow", expression: "残業時間 * 0.5" },
+          ],
+        },
+      },
+    });
+
+    const result = await client.callTool({
+      name: "run_simulation",
+      arguments: { projectId: project.id },
+    });
+    expect(result.isError).toBeFalsy();
+    const payload = JSON.parse(textOf(result)) as RunPayload;
+    expect(payload.ok).toBe(false);
+    expect(payload.error?.type).toBe("undefined-reference");
+    expect(payload.error?.refName).toBe("残業時間");
+    const warnings = payload.warnings ?? [];
+    expect(
+      warnings.some((w) => w.includes("stock へのリンクがありません")),
+    ).toBe(true);
+    expect(warnings.some((w) => w.includes("図にない変数「残業時間」"))).toBe(
+      true,
+    );
+  });
+
+  it("run_simulation の overrides は図を変えずに効き、不正なら invalid-override", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+    await createFatigueModel(client, project.id);
+
+    const result = await client.callTool({
+      name: "run_simulation",
+      arguments: { projectId: project.id, overrides: { 疲労: 100 } },
+    });
+    const payload = JSON.parse(textOf(result)) as RunPayload;
+    expect(payload.stocks?.[0].initial).toBe(100);
+    const snapshot = await loadDiagramSnapshot(project.id);
+    expect(snapshot.nodes.find((n) => n.name === "疲労")?.initialValue).toBe(
+      30,
+    );
+
+    const bad = await client.callTool({
+      name: "run_simulation",
+      arguments: { projectId: project.id, overrides: { 残業増: 1 } },
+    });
+    const badPayload = JSON.parse(textOf(bad)) as RunPayload;
+    expect(badPayload.ok).toBe(false);
+    expect(badPayload.error?.type).toBe("invalid-override");
+  });
+
+  it("compare_scenarios は baseline と各シナリオの要約・差分を並べる", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+    await createFatigueModel(client, project.id);
+
+    const result = await client.callTool({
+      name: "compare_scenarios",
+      arguments: {
+        projectId: project.id,
+        steps: 10,
+        scenarios: [
+          { label: "回復を倍に", overrides: { 回復率: 0.2 } },
+          { label: "回復を 3 倍に", overrides: { 回復率: 0.3 } },
+          { label: "不正", overrides: { 残業増: 0 } },
+        ],
+      },
+    });
+    expect(result.isError).toBeFalsy();
+    const payload = JSON.parse(textOf(result)) as {
+      ok: boolean;
+      baseline: { stocks: { name: string; final: number }[] };
+      scenarios: (
+        | {
+            label: string;
+            ok: true;
+            stocks: {
+              name: string;
+              final: number;
+              delta: number;
+              pattern: string;
+            }[];
+          }
+        | { label: string; ok: false; error: { type: string } }
+      )[];
+    };
+    expect(payload.ok).toBe(true);
+    const baselineFinal = payload.baseline.stocks[0].final;
+    expect(payload.scenarios).toHaveLength(3);
+    const [doubled, tripled, invalid] = payload.scenarios;
+    expect(doubled.label).toBe("回復を倍に");
+    if (!doubled.ok || !tripled.ok) throw new Error("シナリオが失敗した");
+    // 回復率 0.2 = 残業増 0.2 と釣り合い、疲労は初期値のまま
+    expect(doubled.stocks[0].final).toBeCloseTo(30, 6);
+    expect(doubled.stocks[0].delta).toBeCloseTo(30 - baselineFinal, 6);
+    expect(doubled.stocks[0].pattern).toBe("plateau");
+    // 回復率 0.3 なら減り続ける
+    expect(tripled.stocks[0].pattern).toBe("decreasing");
+    expect(tripled.stocks[0].delta).toBeLessThan(doubled.stocks[0].delta);
+    // 不正なシナリオは他を巻き込まず、そのシナリオだけ error
+    expect(invalid.ok).toBe(false);
+    if (invalid.ok) return;
+    expect(invalid.error.type).toBe("invalid-override");
+  });
+
+  it("他ユーザーの project では run_simulation / compare_scenarios とも見つからない", async () => {
+    const owner = await createUser();
+    const attacker = await createUser();
+    const project = await createProject(owner.id);
+    const client = await connectClient(attacker.id);
+
+    const run = await client.callTool({
+      name: "run_simulation",
+      arguments: { projectId: project.id },
+    });
+    expect(run.isError).toBe(true);
+    const compare = await client.callTool({
+      name: "compare_scenarios",
+      arguments: {
+        projectId: project.id,
+        scenarios: [{ label: "x", overrides: {} }],
+      },
+    });
+    expect(compare.isError).toBe(true);
+  });
+
+  it("interview プロンプトは画面左下ではなく run_simulation へ誘導する", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+    const result = await client.getPrompt({
+      name: "interview",
+      arguments: { projectId: project.id },
+    });
+    const text = (result.messages[0].content as { text: string }).text;
+    expect(text).not.toContain("画面左下");
+    expect(text).toContain("run_simulation");
   });
 });

@@ -116,3 +116,39 @@ describe("deriveSignedDependencies", () => {
     ).toEqual([]);
   });
 });
+
+describe("deriveSignedDependencies: ホワイトリスト関数", () => {
+  it("min/max/clamp の引数に現れる変数はリンクが残り符号は null（壊れない）", () => {
+    const links = deriveSignedDependencies([
+      { id: "s", name: "在庫", expression: null },
+      { id: "c", name: "上限", expression: null },
+      {
+        id: "f",
+        name: "入荷",
+        expression: "clamp(上限 - 在庫, 0, 上限) * 0.5",
+      },
+    ]);
+    expect(links.map((l) => [l.fromNodeId, l.toNodeId, l.polarity])).toEqual([
+      ["c", "f", null],
+      ["s", "f", null],
+    ]);
+  });
+
+  it("関数の外側に現れる変数は従来どおり符号が付く", () => {
+    const links = deriveSignedDependencies([
+      { id: "s", name: "在庫", expression: null },
+      { id: "c", name: "上限", expression: null },
+      { id: "f", name: "入荷", expression: "在庫 * 2 - min(上限, 10)" },
+    ]);
+    expect(links.find((l) => l.fromNodeId === "s")?.polarity).toBe("+");
+    expect(links.find((l) => l.fromNodeId === "c")?.polarity).toBeNull();
+  });
+
+  it("べき乗（^）は符号不定として null", () => {
+    const links = deriveSignedDependencies([
+      { id: "s", name: "在庫", expression: null },
+      { id: "f", name: "入荷", expression: "在庫 ^ 2" },
+    ]);
+    expect(links[0]?.polarity).toBeNull();
+  });
+});

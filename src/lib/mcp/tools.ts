@@ -17,6 +17,18 @@ import {
 } from "@/lib/diagram/loop-edges";
 import { detectLoops, MAX_LOOPS } from "@/lib/diagram/loops";
 import { applyMutationPlan } from "@/lib/diagram/mutate";
+import { toSimEdges, toSimNodes } from "@/lib/diagram/sim-inputs";
+import {
+  findBehaviorMismatch,
+  type SimulationSummary,
+  summarizeSimulation,
+} from "@/lib/diagram/sim-summary";
+import {
+  ALLOWED_FUNCTIONS,
+  type SimConfig,
+  type SimError,
+  simulate,
+} from "@/lib/diagram/simulate";
 import { loadDiagramSnapshot } from "@/lib/diagram/snapshot";
 import {
   interviewNotesSchema,
@@ -47,7 +59,74 @@ const SERVER_INSTRUCTIONS = `interlink は「問いの構造を図にする」�
 - warnings は {code, target, message, suggestion} の配列。除外された操作は黙って落ちるので、必ず目を通して suggestion を踏まえて再送する
 - 聞き取った事実（テーマ / 時間挙動 / 理想 / 関係者 / 変数候補）は update_notes に記録する。既定は append（差分だけ送れば既存とマージされる）。整理し直すときだけ mode: "replace" で全体を送る
 - 並行編集を避けたいときは get_diagram / 書き込み応答の updatedAt を expectedUpdatedAt に渡す。不一致なら ok: false と最新の updatedAt が返る
-- 書き込み系ツールの応答に含まれる interview.phase / interview.agenda は聞き取りの誘導。対話を進めるときはこれに従う`;
+- 書き込み系ツールの応答に含まれる interview.phase / interview.agenda は聞き取りの誘導。対話を進めるときはこれに従う
+- ストック&フロー化した図（kind / 式 / 初期値あり）は run_simulation で時間発展を計算し、stock ごとの要約（初期値・最終値・挙動パターン）で実感と突き合わせる。what-if は compare_scenarios（図は変更しない）`;
+
+/** run_simulation / compare_scenarios の既定値（UI のシミュレーションパネルと同じ） */
+const DEFAULT_SIM_DT = 1;
+const DEFAULT_SIM_STEPS = 20;
+/** 1 回の呼び出しで回せるステップ数の上限（応答肥大・計算時間の歯止め） */
+const MAX_SIM_STEPS = 1000;
+const MAX_SCENARIOS = 8;
+
+/** SFD 整合の lint ルール（simulate の前に気づける構造上の問題） */
+const SFD_LINT_RULES = new Set([
+  "flow-without-stock",
+  "stock-without-flow",
+  "stock-to-stock-edge",
+  "undefined-reference",
+]);
+
+const simConfigInput = {
+  dt: z
+    .number()
+    .positive()
+    .optional()
+    .describe(`時間刻み（既定 ${DEFAULT_SIM_DT}）`),
+  steps: z
+    .number()
+    .int()
+    .min(1)
+    .max(MAX_SIM_STEPS)
+    .optional()
+    .describe(
+      `計算ステップ数（既定 ${DEFAULT_SIM_STEPS}、最大 ${MAX_SIM_STEPS}）`,
+    ),
+  nonNegativeStocks: z
+    .boolean()
+    .optional()
+    .describe(
+      "true なら stock が負にならないよう 0 で止める（在庫・人数など負が無意味な量に）",
+    ),
+};
+
+const overridesInput = z
+  .record(z.string(), z.number())
+  .optional()
+  .describe(
+    "変数名 → 値の上書き（図は変更しない）。stock の初期値と constant の値だけ指定できる",
+  );
+
+type SimRunOutcome =
+  | { ok: true; summary: SimulationSummary }
+  | { ok: false; error: SimError };
+
+/** 図の現在地から 1 本シミュレーションを回し、要約または構造化エラーを返す */
+function runSimulationOn(
+  diagram: Awaited<ReturnType<typeof loadDiagramSnapshot>>,
+  config: SimConfig,
+): SimRunOutcome {
+  const simNodes = toSimNodes(diagram.nodes);
+  const result = simulate(simNodes, toSimEdges(diagram.edges), config);
+  if (!result.ok) return { ok: false, error: result.error };
+  const stockNames = simNodes
+    .filter((n) => n.kind === "stock")
+    .map((n) => n.name);
+  return {
+    ok: true,
+    summary: summarizeSimulation(result.series, config, stockNames),
+  };
+}
 
 /** 未指定・不正な projectId のときに interview プロンプトが返す導入文 */
 const INTERVIEW_INTRO_PROMPT = `interlink で聞き取りを始めます。まだ対象プロジェクトが決まっていません。
@@ -597,6 +676,118 @@ export function buildMcpServer(userId: string) {
           },
         ],
       };
+    },
+  );
+
+  server.registerTool(
+    "run_simulation",
+    {
+      description: `ストック&フロー化した図をシミュレーションし、stock ごとの要約（初期値 / 最終値 / 最小 / 最大 / 向き / 挙動パターン）と間引いた時系列を返す。図は変更しない。式は ${ALLOWED_FUNCTIONS.join("/")} の関数が使える。ok: false のときは error.type（missing-field / undefined-reference / cycle / diverged など）を見て update_diagram で図を直す。聞き取りノートの時間挙動と食い違えば mismatch が付く`,
+      inputSchema: z.object({
+        projectId: z.string().min(1).describe("対象プロジェクトの ID"),
+        ...simConfigInput,
+        overrides: overridesInput,
+      }),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ projectId, dt, steps, nonNegativeStocks, overrides }) => {
+      const project = await findOwnedProject(projectId, userId);
+      if (!project) {
+        return toError("プロジェクトが見つかりません");
+      }
+      const diagram = await loadDiagramSnapshot(projectId);
+      const config: SimConfig = {
+        dt: dt ?? DEFAULT_SIM_DT,
+        steps: steps ?? DEFAULT_SIM_STEPS,
+        overrides,
+        nonNegativeStocks,
+      };
+      const warnings = lintDiagram(diagram.nodes, diagram.edges)
+        .filter((f) => SFD_LINT_RULES.has(f.rule))
+        .map((f) => f.message);
+      const outcome = runSimulationOn(diagram, config);
+      if (!outcome.ok) {
+        return toResult({ ok: false, error: outcome.error, warnings });
+      }
+      const guidance = deriveGuidance(project, diagram);
+      const mismatch = findBehaviorMismatch(
+        guidance.notes.behavior?.pattern,
+        outcome.summary.stocks,
+      );
+      return toResult({
+        ok: true,
+        ...outcome.summary,
+        warnings,
+        mismatch,
+      });
+    },
+  );
+
+  server.registerTool(
+    "compare_scenarios",
+    {
+      description:
+        "what-if 比較。図を変更せずに stock の初期値 / constant の値を上書きした複数シナリオを同じ設定で回し、baseline（上書きなし）と並べて stock ごとの要約と最終値の差分を返す。レバレッジポイント（どの定数を動かすと挙動が変わるか）の議論に使う",
+      inputSchema: z.object({
+        projectId: z.string().min(1).describe("対象プロジェクトの ID"),
+        ...simConfigInput,
+        scenarios: z
+          .array(
+            z.object({
+              label: z.string().min(1).describe("シナリオ名（例: 採用倍増）"),
+              overrides: z
+                .record(z.string(), z.number())
+                .describe(
+                  "変数名 → 値の上書き（stock の初期値 / constant の値）",
+                ),
+            }),
+          )
+          .min(1)
+          .max(MAX_SCENARIOS)
+          .describe(`比較するシナリオ（最大 ${MAX_SCENARIOS}）`),
+      }),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ projectId, dt, steps, nonNegativeStocks, scenarios }) => {
+      const project = await findOwnedProject(projectId, userId);
+      if (!project) {
+        return toError("プロジェクトが見つかりません");
+      }
+      const diagram = await loadDiagramSnapshot(projectId);
+      const base: SimConfig = {
+        dt: dt ?? DEFAULT_SIM_DT,
+        steps: steps ?? DEFAULT_SIM_STEPS,
+        nonNegativeStocks,
+      };
+      const baseline = runSimulationOn(diagram, base);
+      if (!baseline.ok) {
+        return toResult({ ok: false, error: baseline.error });
+      }
+      const baselineFinal = new Map(
+        baseline.summary.stocks.map((s) => [s.name, s.final]),
+      );
+      const results = scenarios.map(({ label, overrides }) => {
+        const outcome = runSimulationOn(diagram, { ...base, overrides });
+        if (!outcome.ok) {
+          return { label, overrides, ok: false as const, error: outcome.error };
+        }
+        return {
+          label,
+          overrides,
+          ok: true as const,
+          stocks: outcome.summary.stocks.map((s) => ({
+            ...s,
+            delta: s.final - (baselineFinal.get(s.name) ?? s.final),
+          })),
+        };
+      });
+      return toResult({
+        ok: true,
+        dt: base.dt,
+        steps: base.steps,
+        baseline: { stocks: baseline.summary.stocks },
+        scenarios: results,
+      });
     },
   );
 

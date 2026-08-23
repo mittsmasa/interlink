@@ -36,7 +36,7 @@ export const diagramDiffSchema = z.object({
           .string()
           .optional()
           .describe(
-            "flow / auxiliary の計算式。四則演算（+ - * /）と既存の変数名のみ。関数・べき乗は不可。変数名は図にある名前を正確に書く（例: 残高 * 0.05）。stock / constant では使わない",
+            "flow / auxiliary の計算式。四則演算（+ - * /）・べき乗（^）・関数 min/max/clamp/pow と既存の変数名のみ。それ以外の関数は不可。変数名は図にある名前を正確に書く（例: 残高 * 0.05、clamp(採用 - 離職, 0, 上限)）。stock / constant では使わない",
           ),
         initialValue: z
           .number()

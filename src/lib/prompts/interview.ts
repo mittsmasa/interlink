@@ -240,7 +240,8 @@ const SURFACE_TEXT: Record<InterviewSurface, { checkSimulation: string }> = {
     checkSimulation: "画面左下のシミュレーションで動きを確認するよう促す",
   },
   mcp: {
-    checkSimulation: "シミュレーション結果を確認して挙動を一緒に読むよう促す",
+    checkSimulation:
+      "run_simulation で動きを確認し、stock の挙動パターンをユーザーの実感と突き合わせる",
   },
 };
 
@@ -305,13 +306,13 @@ ${formatNotesForPrompt(notes)}
 ## ストック&フロー化（ユーザーが明示的に求めたときだけ）
 ユーザーが「ストック&フローにして」「SFD にして」「シミュレーションできるようにして」等と求めたら、updateDiagram で各変数に役割（kind）と数値的意味を付けて書き直す。通常の聞き取り（CLD づくり）では行わない。
 - 役割の見分け: stock=時間とともに溜まる/減る量（例: 残高、在庫、疲労、信頼）。flow=stock を増減させる速度（例: 入金、消費、回復）。auxiliary=途中の計算値。constant=変化しない固定パラメータ
-- 式（flow / auxiliary の expression）は四則演算（+ − × ÷）と既存の変数名のみ。関数やべき乗は使えない。変数名は図にある名前を正確に書く（日本語名で可。例: 残高 * 0.05）
+- 式（flow / auxiliary の expression）は四則演算（+ - * /）・べき乗（^）・関数 min/max/clamp/pow と既存の変数名のみ。それ以外の関数は使えない。変数名は図にある名前を正確に書く（日本語名で可。例: 残高 * 0.05、clamp(採用 - 離職, 0, 上限)）
 - stock には initialValue（初期値）、constant には value（固定値）を必ず付ける
 - stock を変化させる flow は、flow→stock のエッジを polarity 付きで張る（+ = 流入 / − = 流出）。rationale も書く
 - ストックは「ひとつ前の値」を保持するので、flow/auxiliary の式が stock を参照しても循環にならない。一方 flow/auxiliary 同士で輪を作ると循環エラーになるため、間に stock を挟む
 - **説明だけで終わらせない。必ず同じ応答の中で updateDiagram ツールを呼び、kind と式・初期値・定数値を実際に書き込む**。「更新します」と述べたら、その応答内で必ずツールを実行すること
 - ツールで反映したあとに、何をストック/フローにしたか、式が何を表すかを一言で説明し、${surfaceText.checkSimulation}
-- ツールが「式が無効」等の warning を返したら、式を四則演算に直して再送する
+- ツールが「式が無効」等の warning を返したら、許可された記法（四則演算・べき乗・min/max/clamp/pow）に直して再送する
 
 ## 変数とリンクの品質
 - 変数は増減を語れる名詞句。動詞や方向を含めない（×「コスト増大」→ ○「コスト」）

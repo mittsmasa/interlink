@@ -134,3 +134,86 @@ describe("lintDiagram", () => {
     });
   });
 });
+
+describe("lintDiagram: SFD 整合ルール", () => {
+  const stockNode = (id: string, name: string) => ({
+    id,
+    name,
+    kind: "stock",
+  });
+  const flowNode = (id: string, name: string, expression = "1") => ({
+    id,
+    name,
+    kind: "flow",
+    expression,
+  });
+
+  it("flow → stock と stock が揃っていれば指摘なし", () => {
+    const findings = lintDiagram(
+      [stockNode("s", "在庫"), flowNode("f", "入荷")],
+      [edge("e1", "f", "s")],
+    );
+    expect(findings.filter((f) => f.severity === "warning")).toEqual([]);
+  });
+
+  it("stock へ繋がらない flow は flow-without-stock", () => {
+    const findings = lintDiagram(
+      [
+        stockNode("s", "在庫"),
+        flowNode("f", "入荷"),
+        { id: "x", name: "需要" },
+      ],
+      [edge("e1", "f", "x"), edge("e2", "x", "s")],
+    );
+    const finding = findings.find((f) => f.rule === "flow-without-stock");
+    expect(finding?.severity).toBe("warning");
+    expect(finding?.nodeIds).toEqual(["f"]);
+  });
+
+  it("flow の無い stock は stock-without-flow", () => {
+    const findings = lintDiagram(
+      [stockNode("s", "在庫"), { id: "x", name: "需要" }],
+      [edge("e1", "x", "s")],
+    );
+    const finding = findings.find((f) => f.rule === "stock-without-flow");
+    expect(finding?.nodeIds).toEqual(["s"]);
+  });
+
+  it("stock → stock のエッジは stock-to-stock-edge（edgeIds 付き）", () => {
+    const findings = lintDiagram(
+      [
+        stockNode("a", "在庫"),
+        stockNode("b", "売上累計"),
+        flowNode("f", "入荷"),
+        flowNode("g", "計上"),
+      ],
+      [edge("e1", "f", "a"), edge("e2", "g", "b"), edge("e3", "a", "b")],
+    );
+    const finding = findings.find((f) => f.rule === "stock-to-stock-edge");
+    expect(finding?.edgeIds).toEqual(["e3"]);
+    expect(finding?.message).toContain("「在庫」→「売上累計」");
+  });
+
+  it("式が図にない変数を参照していれば undefined-reference（関数名は除く）", () => {
+    const findings = lintDiagram(
+      [stockNode("s", "在庫"), flowNode("f", "入荷", "min(需要, 上限) + 在庫")],
+      [edge("e1", "f", "s")],
+    );
+    const finding = findings.find((f) => f.rule === "undefined-reference");
+    expect(finding?.severity).toBe("warning");
+    expect(finding?.nodeIds).toEqual(["f"]);
+    expect(finding?.message).toContain("「需要」「上限」");
+    expect(finding?.message).not.toContain("min");
+  });
+
+  it("kind の無い CLD には SFD ルールを出さない", () => {
+    const findings = lintDiagram(
+      [
+        { id: "a", name: "残業時間" },
+        { id: "b", name: "疲労" },
+      ],
+      [edge("e1", "a", "b"), edge("e2", "b", "a")],
+    );
+    expect(findings).toEqual([]);
+  });
+});
