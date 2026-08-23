@@ -1,6 +1,6 @@
 import type { ArchetypeMatch } from "@/lib/diagram/archetypes";
 import type { LintFinding } from "@/lib/diagram/lint";
-import type { LoopDetectionResult } from "@/lib/diagram/loops";
+import type { Loop, LoopDetectionResult } from "@/lib/diagram/loops";
 import {
   BEHAVIOR_PATTERN_LABELS,
   type InterviewNotes,
@@ -76,6 +76,13 @@ export type DiagramVerification = {
   matches: ArchetypeMatch[];
 };
 
+/** ループ極性の表示。"?" は式由来リンクの符号が構造から決まらず R/B を確定できない状態 */
+const LOOP_POLARITY_LABELS: Record<Loop["polarity"], string> = {
+  R: "自己強化",
+  B: "バランス",
+  "?": "極性未定（式の符号が構造から決まらない）",
+};
+
 /** プロンプトに埋め込むループ数の上限 */
 const PROMPT_MAX_LOOPS = 10;
 /** プロンプトに埋め込む lint 指摘数の上限 */
@@ -98,10 +105,11 @@ export function buildVerificationPromptSection(
   } else {
     const shown = loopResult.loops.slice(0, PROMPT_MAX_LOOPS);
     for (const loop of shown) {
-      const kind = loop.polarity === "R" ? "自己強化" : "バランス";
+      const kind = LOOP_POLARITY_LABELS[loop.polarity];
       const delay = loop.hasDelay ? "、遅れあり" : "";
+      const derived = loop.derived ? "、式由来の暫定ループ" : "";
       lines.push(
-        `- ${loop.label}（${kind}${delay}、id: ${loop.id}）: ${loop.nodeNames.join(" → ")} → ${loop.nodeNames[0]}`,
+        `- ${loop.label}（${kind}${delay}${derived}、id: ${loop.id}）: ${loop.nodeNames.join(" → ")} → ${loop.nodeNames[0]}`,
       );
     }
     const hiddenCount = loopResult.loops.length - shown.length;
@@ -220,14 +228,32 @@ export function formatNotesForPrompt(notes: InterviewNotes): string {
   return lines.join("\n");
 }
 
+/**
+ * プロンプトを出す面。chat = アプリ内チャット（キャンバスとシミュレーション
+ * パネルが同じ画面にある）/ mcp = 外部エージェント（画面を前提にできない）
+ */
+export type InterviewSurface = "chat" | "mcp";
+
+/** 面ごとに変える文言。画面の位置や UI 部品への言及はここに閉じ込める */
+const SURFACE_TEXT: Record<InterviewSurface, { checkSimulation: string }> = {
+  chat: {
+    checkSimulation: "画面左下のシミュレーションで動きを確認するよう促す",
+  },
+  mcp: {
+    checkSimulation: "シミュレーション結果を確認して挙動を一緒に読むよう促す",
+  },
+};
+
 /** 聞き取りチャットのシステムプロンプトを組み立てる */
 export function buildInterviewSystemPrompt(
   diagram: DiagramSnapshot,
   verification: DiagramVerification,
   guidance: InterviewGuidance,
+  options: { surface?: InterviewSurface } = {},
 ) {
   const { notes, phase, agenda } = guidance;
   const guide = PHASE_GUIDE[phase];
+  const surfaceText = SURFACE_TEXT[options.surface ?? "chat"];
 
   const agendaSection =
     agenda.length > 0
@@ -284,7 +310,7 @@ ${formatNotesForPrompt(notes)}
 - stock を変化させる flow は、flow→stock のエッジを polarity 付きで張る（+ = 流入 / − = 流出）。rationale も書く
 - ストックは「ひとつ前の値」を保持するので、flow/auxiliary の式が stock を参照しても循環にならない。一方 flow/auxiliary 同士で輪を作ると循環エラーになるため、間に stock を挟む
 - **説明だけで終わらせない。必ず同じ応答の中で updateDiagram ツールを呼び、kind と式・初期値・定数値を実際に書き込む**。「更新します」と述べたら、その応答内で必ずツールを実行すること
-- ツールで反映したあとに、何をストック/フローにしたか、式が何を表すかを一言で説明し、画面左下のシミュレーションで動きを確認するよう促す
+- ツールで反映したあとに、何をストック/フローにしたか、式が何を表すかを一言で説明し、${surfaceText.checkSimulation}
 - ツールが「式が無効」等の warning を返したら、式を四則演算に直して再送する
 
 ## 変数とリンクの品質

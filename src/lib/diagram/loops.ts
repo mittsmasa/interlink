@@ -1,7 +1,15 @@
 import findCircuits from "elementary-circuits-directed-graph";
 
-/** 検出するループ数の上限。超えた分は打ち切って truncated で知らせる */
+/** 返すループ数の上限。超えた分は（ソート後に）切り捨てて truncated で知らせる */
 export const MAX_LOOPS = 50;
+
+/**
+ * Johnson 法で列挙する circuit 数の上限。列挙順は長さ順ではないため、MAX_LOOPS ちょうどで
+ * 打ち切ると「たまたま先に出た長いループ」が残り、短い重要なループが落ちる。余裕を持って
+ * 列挙してからソートし MAX_LOOPS に切る。×4 は厳密にチューニングした値ではなく、
+ * 密な図でも短いループを拾いやすくするための暫定係数（取りこぼしの緩和であって解決ではない）
+ */
+const MAX_ENUMERATED_CIRCUITS = MAX_LOOPS * 4;
 
 export type LoopPolarity = "R" | "B" | "?";
 
@@ -37,7 +45,7 @@ export type LoopDetectionResult = {
 };
 
 type LoopNode = { id: string; name: string };
-type LoopEdge = {
+export type LoopEdge = {
   id: string;
   sourceNodeId: string;
   targetNodeId: string;
@@ -94,7 +102,9 @@ export function detectLoops(
   let truncated = false;
   try {
     findCircuits(adjacency, (circuit) => {
-      if (circuits.length >= MAX_LOOPS) throw new TruncationSignal();
+      if (circuits.length >= MAX_ENUMERATED_CIRCUITS) {
+        throw new TruncationSignal();
+      }
       circuits.push(circuit);
     });
   } catch (error) {
@@ -102,7 +112,20 @@ export function detectLoops(
     truncated = true;
   }
 
-  const loops = circuits.map((circuit) => {
+  // 自己ループは最短（長さ 1）なので常に先頭に積む。findCircuits の列挙に混ざらないため
+  // 打ち切りの影響を受けない
+  const loops: Loop[] = selfLoopEdges.map((edge) => ({
+    id: `loop:${edge.sourceNodeId}`,
+    label: "",
+    nodeIds: [edge.sourceNodeId],
+    nodeNames: [nameById.get(edge.sourceNodeId) ?? ""],
+    edgeIds: [edge.id],
+    polarity: edge.polarity === null ? "?" : edge.polarity === "-" ? "B" : "R",
+    hasDelay: edge.hasDelay,
+    derived: edge.derived === true,
+  }));
+
+  for (const circuit of circuits) {
     // findCircuits は [v0, v1, ..., v0] と始点を末尾に繰り返す
     const nodeIds = rotateToMin(
       circuit.slice(0, -1).map((index) => nodes[index].id),
@@ -120,44 +143,27 @@ export function detectLoops(
     // 符号不定（null）のリンクを含むループは R/B を確定できないので "?"
     const hasUnknown = loopEdges.some((e) => e.polarity === null);
     const negativeCount = loopEdges.filter((e) => e.polarity === "-").length;
-    return {
+    loops.push({
       id: `loop:${nodeIds.join("→")}`,
       label: "",
       nodeIds,
       nodeNames: nodeIds.map((id) => nameById.get(id) ?? ""),
       edgeIds: loopEdges.map((e) => e.id),
-      polarity: (hasUnknown
-        ? "?"
-        : negativeCount % 2 === 0
-          ? "R"
-          : "B") as LoopPolarity,
+      polarity: hasUnknown ? "?" : negativeCount % 2 === 0 ? "R" : "B",
       hasDelay: loopEdges.some((e) => e.hasDelay),
       derived: loopEdges.some((e) => e.derived === true),
-    };
-  });
-
-  for (const edge of selfLoopEdges) {
-    if (loops.length >= MAX_LOOPS) {
-      truncated = true;
-      break;
-    }
-    loops.push({
-      id: `loop:${edge.sourceNodeId}`,
-      label: "",
-      nodeIds: [edge.sourceNodeId],
-      nodeNames: [nameById.get(edge.sourceNodeId) ?? ""],
-      edgeIds: [edge.id],
-      polarity:
-        edge.polarity === null ? "?" : edge.polarity === "-" ? "B" : "R",
-      hasDelay: edge.hasDelay,
-      derived: edge.derived === true,
     });
   }
 
-  // 表示が揺れないよう小さいループ優先 + ID 辞書順で安定ソートし、極性ごとに番号を振る
+  // 表示が揺れないよう小さいループ優先 + ID 辞書順で安定ソートしてから上限に切り、
+  // 残ったものに極性ごとの番号を振る（番号は切り捨て後に振るので欠番が出ない）
   loops.sort(
     (a, b) => a.nodeIds.length - b.nodeIds.length || a.id.localeCompare(b.id),
   );
+  if (loops.length > MAX_LOOPS) {
+    loops.length = MAX_LOOPS;
+    truncated = true;
+  }
   const counters: Record<LoopPolarity, number> = { R: 0, B: 0, "?": 0 };
   for (const loop of loops) {
     counters[loop.polarity] += 1;

@@ -3,6 +3,7 @@ import { and, asc, desc, eq } from "drizzle-orm";
 import { cache } from "react";
 import { db } from "@/db";
 import { projects } from "@/db/schema";
+import { buildLoopEdges } from "@/lib/diagram/loop-edges";
 import { detectLoops } from "@/lib/diagram/loops";
 import { parseInterviewNotes } from "@/lib/interview/notes";
 import { deriveInterviewPhase } from "@/lib/interview/phase";
@@ -42,7 +43,7 @@ export const getProjectSummariesByUserId = cache(async (userId: string) => {
     where: eq(projects.userId, userId),
     orderBy: [asc(projects.createdAt)],
     with: {
-      nodes: { columns: { id: true, name: true } },
+      nodes: { columns: { id: true, name: true, expression: true } },
       edges: {
         columns: {
           id: true,
@@ -56,7 +57,7 @@ export const getProjectSummariesByUserId = cache(async (userId: string) => {
   });
   return rows.map(({ nodes, edges, ...project }) => {
     const notes = parseInterviewNotes(project.interviewNotes);
-    const { loops } = detectLoops(nodes, edges);
+    const { loops } = detectLoops(nodes, buildLoopEdges({ nodes, edges }));
     const loopIds = new Set(loops.map((l) => l.id));
     return {
       id: project.id,

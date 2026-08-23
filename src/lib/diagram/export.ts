@@ -1,4 +1,5 @@
 import { type ArchetypeMatch, matchArchetypes } from "./archetypes";
+import { buildLoopEdges } from "./loop-edges";
 import { detectLoops, type Loop } from "./loops";
 
 /**
@@ -283,7 +284,8 @@ export function renderDiagramExport(
       rationale: e.rationale,
     })),
   };
-  const loopResult = detectLoops(input.nodes, input.edges);
+  // 式由来の情報リンクも含めた集合でループを見る（キャンバス / MCP と同じ入口）
+  const loopResult = detectLoops(input.nodes, buildLoopEdges(input));
   if (format === "mermaid") {
     return exportDiagramToMermaid(diagram, loopResult.loops);
   }

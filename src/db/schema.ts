@@ -298,7 +298,8 @@ export const projects = sqliteTable(
       .notNull()
       .default("interviewing"),
     /**
-     * 聞き取りノート（JSON 文字列）。AI が updateNotes ツールで全置換更新する。
+     * 聞き取りノート（JSON 文字列）。AI が updateNotes ツールで更新する
+     * （チャットは全置換、MCP の update_notes は既定で append マージ）。
      * schema と parse は src/lib/interview/notes.ts。null = 空ノート
      */
     interviewNotes: text("interview_notes"),

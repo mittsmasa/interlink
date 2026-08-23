@@ -11,7 +11,11 @@ import { matchArchetypes } from "@/lib/diagram/archetypes";
 import { diagramDiffSchema } from "@/lib/diagram/diff-schema";
 import { renderDiagramExport } from "@/lib/diagram/export";
 import { lintDiagram } from "@/lib/diagram/lint";
-import { detectLoops } from "@/lib/diagram/loops";
+import {
+  buildLoopEdges,
+  deriveLoopDependencies,
+} from "@/lib/diagram/loop-edges";
+import { detectLoops, MAX_LOOPS } from "@/lib/diagram/loops";
 import { applyMutationPlan } from "@/lib/diagram/mutate";
 import { loadDiagramSnapshot } from "@/lib/diagram/snapshot";
 import {
@@ -24,6 +28,7 @@ import {
   deriveGuidance,
   loadGuidance,
 } from "@/lib/mcp/interview";
+import { diffStructure } from "@/lib/mcp/structure-diff";
 import { deleteOwnedProject, renameOwnedProject } from "@/lib/projects/manage";
 import { getProjectSummariesByUserId } from "@/lib/queries/projects";
 
@@ -36,10 +41,13 @@ const SERVER_INSTRUCTIONS = `interlink は「問いの構造を図にする」�
 - ユーザーの悩みを聞き取りながら図を作るときは、interview プロンプトを使うと聞き取りの方法論と現在地が手に入る（最短の入口）
 - 図を読むには get_diagram。ループ（R/B）・lint 指摘・システム原型に加え、聞き取りノートと「次に聞くこと」（interview.phase / interview.agenda）も返る
 - 図の書き込みは update_diagram（差分形式）。変数は増減を語れる名詞句にし、因果リンクには根拠（rationale）を必ず添える。相関しか確認できていない関係を因果にしない
-- 聞き取った事実（テーマ / 時間挙動 / 理想 / 関係者 / 変数候補）は update_notes に記録する（全置換。既存内容に加えた全体を送る）
-- 書き込み系ツールの応答に含まれる interview.phase / interview.agenda は聞き取りの誘導。対話を進めるときはこれに従う
 - 図を持ち出すときは export_diagram（mermaid はそのまま描画できる。markdown は根拠付きの表）。プロジェクトの改名は update_project、削除は delete_project（取り消せない。ユーザーの明示的な指示があるときだけ）
-- resources でも読める: interlink://projects（一覧）、interlink://projects/{id}/diagram.md（図の markdown）、interlink://projects/{id}/notes.json（聞き取りノート）`;
+- resources でも読める: interlink://projects（一覧）、interlink://projects/{id}/diagram.md（図の markdown）、interlink://projects/{id}/notes.json（聞き取りノート）
+- update_diagram は dryRun: true で適用せずに計画と警告だけ確認できる。適用すると閉じた/開いたループと新しい lint 指摘（structure）が返るので、get_diagram を読み直さなくても結果が分かる
+- warnings は {code, target, message, suggestion} の配列。除外された操作は黙って落ちるので、必ず目を通して suggestion を踏まえて再送する
+- 聞き取った事実（テーマ / 時間挙動 / 理想 / 関係者 / 変数候補）は update_notes に記録する。既定は append（差分だけ送れば既存とマージされる）。整理し直すときだけ mode: "replace" で全体を送る
+- 並行編集を避けたいときは get_diagram / 書き込み応答の updatedAt を expectedUpdatedAt に渡す。不一致なら ok: false と最新の updatedAt が返る
+- 書き込み系ツールの応答に含まれる interview.phase / interview.agenda は聞き取りの誘導。対話を進めるときはこれに従う`;
 
 /** 未指定・不正な projectId のときに interview プロンプトが返す導入文 */
 const INTERVIEW_INTRO_PROMPT = `interlink で聞き取りを始めます。まだ対象プロジェクトが決まっていません。
@@ -65,6 +73,40 @@ function toError(message: string) {
     isError: true,
   };
 }
+
+/** get_diagram / 書き込み応答に載せる updatedAt（ms epoch）。楽観ロックの版として使う */
+function versionOf(project: { updatedAt: number }) {
+  return project.updatedAt;
+}
+
+/**
+ * 楽観ロックの判定。expectedUpdatedAt が渡され現在値と違えば競合応答を返す。
+ * 読み取り → 比較 → 適用の間の窓は残る（個人用途のため transaction 化はしない）
+ */
+function checkVersion(
+  project: { updatedAt: number },
+  expectedUpdatedAt: number | undefined,
+) {
+  if (expectedUpdatedAt === undefined) return null;
+  const current = versionOf(project);
+  if (expectedUpdatedAt === current) return null;
+  return toResult({
+    ok: false,
+    error: "conflict",
+    message:
+      "プロジェクトが expectedUpdatedAt より後に更新されています。get_diagram で読み直してから再送してください",
+    updatedAt: current,
+    expectedUpdatedAt,
+  });
+}
+
+const expectedUpdatedAtSchema = z
+  .number()
+  .int()
+  .optional()
+  .describe(
+    "楽観ロック。直前の get_diagram / 書き込み応答の updatedAt を渡すと、他の編集が挟まっていた場合に ok: false（error: conflict）を返す",
+  );
 
 /** 認証ユーザー所有の project のみ返す（他ユーザーの ID を渡されても見つからない） */
 async function findOwnedProject(projectId: string, userId: string) {
@@ -124,7 +166,7 @@ export function buildMcpServer(userId: string) {
     {
       description:
         "自分のプロジェクト（問い）の一覧を返す。図を操作する前に projectId を調べるために使う。各プロジェクトにテーマ・聞き取りフェーズ・変数/リンク/ループ数・確認済みループ数を添える",
-      annotations: { readOnlyHint: true },
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async () => {
       return toResult({ projects: await getProjectSummariesByUserId(userId) });
@@ -142,12 +184,22 @@ export function buildMcpServer(userId: string) {
           .min(1)
           .describe("プロジェクトのタイトル（問いの一行要約）"),
       }),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
     },
     async ({ title }) => {
       const [project] = await db
         .insert(projects)
         .values({ userId, title })
-        .returning({ id: projects.id, title: projects.title });
+        .returning({
+          id: projects.id,
+          title: projects.title,
+          updatedAt: projects.updatedAt,
+        });
       return toResult({ project });
     },
   );
@@ -156,10 +208,11 @@ export function buildMcpServer(userId: string) {
     "get_diagram",
     {
       description:
-        "プロジェクトの因果ループ図の現在地を返す。変数・因果リンクに加え、導出済みの検証結果（フィードバックループと R/B 極性、lint 指摘、システム原型マッチ）を含む",
+        "プロジェクトの因果ループ図の現在地を返す。変数・因果リンク・式由来の情報リンク（dependencies）に加え、導出済みの検証結果（フィードバックループと R/B 極性、lint 指摘、システム原型マッチ）を含む。loops[].id は update_notes の confirmedLoopIds と archetypeMatches[].loopIds が指す ID。極性 ? は式の符号が構造から決まらない極性未定、derived は式由来リンクを含む暫定ループ。updatedAt は update_* の expectedUpdatedAt に渡せる",
       inputSchema: z.object({
         projectId: z.string().min(1).describe("対象プロジェクトの ID"),
       }),
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async ({ projectId }) => {
       const project = await findOwnedProject(projectId, userId);
@@ -167,10 +220,14 @@ export function buildMcpServer(userId: string) {
         return toError("プロジェクトが見つかりません");
       }
       const diagram = await loadDiagramSnapshot(projectId);
-      const loopResult = detectLoops(diagram.nodes, diagram.edges);
+      // キャンバスと同じ入力（因果エッジ + 式由来リンク）でループを導出する
+      const dependencies = deriveLoopDependencies(diagram);
+      const loopResult = detectLoops(diagram.nodes, buildLoopEdges(diagram));
       const guidance = deriveGuidance(project, diagram);
+      const nameById = new Map(diagram.nodes.map((n) => [n.id, n.name]));
       return toResult({
         project: { id: project.id, title: project.title },
+        updatedAt: versionOf(project),
         nodes: diagram.nodes.map((n) => ({
           name: n.name,
           memo: n.memo,
@@ -187,11 +244,28 @@ export function buildMcpServer(userId: string) {
           hasDelay: e.hasDelay,
           rationale: e.rationale,
         })),
-        loops: loopResult.loops.map((l) => ({
-          polarity: l.polarity,
-          nodeNames: l.nodeNames,
+        dependencies: dependencies.map((d) => ({
+          from: nameById.get(d.fromNodeId) ?? "",
+          to: nameById.get(d.toNodeId) ?? "",
+          polarity: d.polarity,
         })),
-        truncated: loopResult.truncated,
+        loops: loopResult.loops.map((l) => ({
+          id: l.id,
+          label: l.label,
+          polarity: l.polarity,
+          hasDelay: l.hasDelay,
+          derived: l.derived === true,
+          nodeNames: l.nodeNames,
+          edges: l.nodeNames.map((source, i) => ({
+            source,
+            target: l.nodeNames[(i + 1) % l.nodeNames.length],
+          })),
+        })),
+        loopLimit: {
+          truncated: loopResult.truncated,
+          shown: loopResult.loops.length,
+          limit: MAX_LOOPS,
+        },
         lintFindings: lintDiagram(diagram.nodes, diagram.edges),
         archetypeMatches: matchArchetypes(loopResult.loops),
         interviewNotes: guidance.notes,
@@ -204,26 +278,85 @@ export function buildMcpServer(userId: string) {
     "update_diagram",
     {
       description:
-        "因果ループ図を差分で更新する。変数・因果リンクの追加/更新/削除を一括で指定できる。既存の図への増分修正として使うこと。変数は ID ではなく名前で参照する",
+        "因果ループ図を差分で更新する。変数・因果リンクの追加/更新/削除を一括で指定できる。既存の図への増分修正として使うこと。変数は ID ではなく名前で参照する。dryRun: true なら適用せずに計画（plan）と警告だけ返す。適用時は件数に加え、閉じた/開いたループと新しい lint 指摘（structure）を返す。warnings にある操作は除外されたまま残りが適用されるので、必ず確認して再送する",
       inputSchema: z.object({
         projectId: z.string().min(1).describe("対象プロジェクトの ID"),
         diff: diagramDiffSchema,
+        dryRun: z
+          .boolean()
+          .optional()
+          .describe("true なら検証だけ行い、図を変更しない"),
+        expectedUpdatedAt: expectedUpdatedAtSchema,
       }),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
     },
-    async ({ projectId, diff }) => {
+    async ({ projectId, diff, dryRun, expectedUpdatedAt }) => {
       const project = await findOwnedProject(projectId, userId);
       if (!project) {
         return toError("プロジェクトが見つかりません");
       }
+      const conflict = checkVersion(project, expectedUpdatedAt);
+      if (conflict) return conflict;
+
       const current = await loadDiagramSnapshot(projectId);
       const planResult = planDiagramMutation(current, diff);
       if (!planResult.ok) {
-        return toError(planResult.reason);
+        return toResult({
+          ok: false,
+          error: planResult.reason,
+          warnings: planResult.warnings,
+          updatedAt: versionOf(project),
+        });
       }
-      await applyMutationPlan(projectId, planResult.plan);
       const { plan } = planResult;
-      // 適用後の図で聞き取りの現在地を導出し、次の一手を同梱する
-      const guidance = await loadGuidance(project);
+      const planSummary = {
+        createNodes: plan.createNodes.map((n) => n.name),
+        updateNodes: plan.updateNodes.map(
+          (n) => current.nodes.find((c) => c.id === n.id)?.name ?? n.id,
+        ),
+        deleteNodes: plan.deleteNodeIds.map(
+          (id) => current.nodes.find((c) => c.id === id)?.name ?? id,
+        ),
+        createEdges: plan.createEdges.map(
+          (e) => `${e.sourceName}→${e.targetName}`,
+        ),
+        updateEdges: plan.updateEdges.map((e) => {
+          const edge = current.edges.find((c) => c.id === e.id);
+          return edge ? `${edge.sourceName}→${edge.targetName}` : e.id;
+        }),
+        deleteEdges: plan.deleteEdgeIds.map((id) => {
+          const edge = current.edges.find((c) => c.id === id);
+          return edge ? `${edge.sourceName}→${edge.targetName}` : id;
+        }),
+      };
+      if (dryRun) {
+        return toResult({
+          ok: true,
+          dryRun: true,
+          plan: planSummary,
+          warnings: plan.warnings,
+          updatedAt: versionOf(project),
+        });
+      }
+
+      const before = {
+        loops: detectLoops(current.nodes, buildLoopEdges(current)).loops,
+        findings: lintDiagram(current.nodes, current.edges),
+      };
+      await applyMutationPlan(projectId, plan);
+      // 適用後の図で聞き取りの現在地を導出し、構造の変化と次の一手を同梱する
+      const after = await loadDiagramSnapshot(projectId);
+      const saved = (await findOwnedProject(projectId, userId)) ?? project;
+      const guidance = deriveGuidance(saved, after);
+      const structure = diffStructure(before, {
+        loops: detectLoops(after.nodes, buildLoopEdges(after)).loops,
+        findings: lintDiagram(after.nodes, after.edges),
+      });
       return toResult({
         ok: true,
         warnings: plan.warnings,
@@ -235,6 +368,8 @@ export function buildMcpServer(userId: string) {
           updatedEdges: plan.updateEdges.length,
           deletedEdges: plan.deleteEdgeIds.length,
         },
+        structure,
+        updatedAt: versionOf(saved),
         interview: { phase: guidance.phase, agenda: guidance.agenda },
       });
     },
@@ -244,23 +379,43 @@ export function buildMcpServer(userId: string) {
     "update_notes",
     {
       description:
-        "聞き取りノートを全置換で更新する。テーマ・時間挙動・理想・関係者・変数候補・確認済みループ ID を聞き取ったら反映する。図に置く前の変数候補はここに貯める。現在のノートの内容に新しい事実を加えた全体を送る（既存の内容を欠落させない）",
+        "聞き取りノートを更新する。テーマ・時間挙動・理想・関係者・変数候補・確認済みループ ID を聞き取ったら反映する。図に置く前の変数候補はここに貯める。既定の mode: append では送った差分が既存ノートとマージされる（配列は union、スカラーは非 null のみ上書き）ので、新しく分かった事実だけ送ればよい。mode: replace は全置換（既存の内容を欠落させないよう全体を送る）。応答に保存後の notes と、保持上限で落ちた件数（dropped）を返す",
       inputSchema: z.object({
         projectId: z.string().min(1).describe("対象プロジェクトの ID"),
         notes: interviewNotesSchema,
+        mode: z
+          .enum(["replace", "append"])
+          .optional()
+          .describe("append（既定）= 既存とマージ / replace = 全置換"),
+        expectedUpdatedAt: expectedUpdatedAtSchema,
       }),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
     },
-    async ({ projectId, notes }) => {
+    async ({ projectId, notes, mode, expectedUpdatedAt }) => {
       const project = await findOwnedProject(projectId, userId);
       if (!project) {
         return toError("プロジェクトが見つかりません");
       }
-      await saveInterviewNotes(projectId, notes);
+      const conflict = checkVersion(project, expectedUpdatedAt);
+      if (conflict) return conflict;
+
+      const result = await saveInterviewNotes(projectId, notes, {
+        mode: mode ?? "append",
+      });
       // 保存後のノートと最新の図で現在地を導出する
-      const saved = await findOwnedProject(projectId, userId);
-      const guidance = await loadGuidance(saved ?? project);
+      const saved = (await findOwnedProject(projectId, userId)) ?? project;
+      const guidance = await loadGuidance(saved);
       return toResult({
         ok: true,
+        mode: mode ?? "append",
+        notes: result.notes,
+        dropped: result.dropped,
+        updatedAt: versionOf(saved),
         interview: { phase: guidance.phase, agenda: guidance.agenda },
       });
     },
@@ -277,7 +432,7 @@ export function buildMcpServer(userId: string) {
           .enum(["mermaid", "markdown"])
           .describe("mermaid: そのまま描画できる図 / markdown: 共有用の文書"),
       }),
-      annotations: { readOnlyHint: true },
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async ({ projectId, format }) => {
       const project = await findOwnedProject(projectId, userId);
@@ -298,7 +453,12 @@ export function buildMcpServer(userId: string) {
         projectId: z.string().min(1).describe("対象プロジェクトの ID"),
         title: z.string().min(1).describe("新しいタイトル"),
       }),
-      annotations: { idempotentHint: true },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async ({ projectId, title }) => {
       const result = await renameOwnedProject(projectId, userId, title);
@@ -324,7 +484,12 @@ export function buildMcpServer(userId: string) {
       inputSchema: z.object({
         projectId: z.string().min(1).describe("削除するプロジェクトの ID"),
       }),
-      annotations: { destructiveHint: true, idempotentHint: true },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async ({ projectId }) => {
       const deleted = await deleteOwnedProject(projectId, userId);
