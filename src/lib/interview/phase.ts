@@ -24,20 +24,26 @@ export const PHASE_LABELS: Record<InterviewPhase, string> = {
 };
 
 /**
- * insight へ移るのに要るリンクの確認率。エッジに status（confirmed 等）が付いている
- * 図でだけ効く。status を持つエッジが 1 本も無い図（列が無い / 未設定）では
- * この条件は評価せず、ループの確認だけで判定する
+ * insight へ移るのに要るリンクの確認率。edges.status は NOT NULL（既定 inferred）なので
+ * 実データでは常に評価される。つまりループを確認しただけでは insight に入らず、
+ * リンクの半分以上を confirmed にする必要がある。
+ * status を 1 つも持たない入力（テスト fixture 等）でのみ、この条件を飛ばして
+ * ループの確認だけで判定する
  */
 export const INSIGHT_CONFIRMED_EDGE_RATIO = 0.5;
 
 type PhaseInput = {
   nodes: { name: string }[];
-  /** 呼び出し側の行型をそのまま受ける。status 列が入ったら型を締める */
+  /**
+   * 呼び出し側の行型をそのまま受ける。status を落とした projection を渡すと
+   * 確認率の条件がすり抜けるため、DB から引くときは status を必ず含めること
+   * （queries/projects.ts の columns 指定）
+   */
   edges: readonly unknown[];
   loops: readonly Loop[];
 };
 
-/** エッジの確認状態（status 列）。列が無い / 未設定なら null */
+/** エッジの確認状態（status 列）。持たない入力なら null */
 function readEdgeStatus(edge: unknown): string | null {
   if (typeof edge !== "object" || edge === null) return null;
   const status = (edge as { status?: unknown }).status;

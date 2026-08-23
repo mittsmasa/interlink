@@ -303,8 +303,55 @@ describe("MCP tools", () => {
       interview: { phase: string; agenda: string[] };
     };
     expect(saved.notes.hypotheses[0].status).toBe("proposed");
-    expect(saved.interview.phase).toBe("insight");
-    expect(saved.interview.agenda[0]).toContain(
+    // エッジは既定 inferred なので confirmed 率 0% → ループを確認しても refine で止まる
+    expect(saved.interview.phase).toBe("refine");
+
+    // 一覧の phase も同じ導出になる（射影が status を落とすと insight にすり抜ける）
+    const list = await client.callTool({ name: "list_projects" });
+    const { projects: listed } = JSON.parse(textOf(list)) as {
+      projects: Record<string, unknown>[];
+    };
+    expect(listed.find((p) => p.id === project.id)).toMatchObject({
+      interviewPhase: "refine",
+    });
+
+    // リンクの確からしさを confirmed にすると insight へ（5 本中 3 本 = 60%）
+    const confirmEdges = await client.callTool({
+      name: "update_diagram",
+      arguments: {
+        projectId: project.id,
+        diff: {
+          upsertEdges: [
+            {
+              source: "残業時間",
+              target: "疲労",
+              polarity: "+",
+              rationale: "-",
+              status: "confirmed",
+            },
+            {
+              source: "疲労",
+              target: "ミス",
+              polarity: "+",
+              rationale: "-",
+              status: "confirmed",
+            },
+            {
+              source: "疲労",
+              target: "休息",
+              polarity: "+",
+              rationale: "-",
+              status: "confirmed",
+            },
+          ],
+        },
+      },
+    });
+    const confirmed = JSON.parse(textOf(confirmEdges)) as {
+      interview: { phase: string; agenda: string[] };
+    };
+    expect(confirmed.interview.phase).toBe("insight");
+    expect(confirmed.interview.agenda[0]).toContain(
       "介入候補: 「疲労」（B1 と R1 の接点）",
     );
 

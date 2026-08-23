@@ -118,7 +118,7 @@ describe("deriveInterviewPhase", () => {
       expect(deriveInterviewPhase(notes, highRatio)).toBe("insight");
     });
 
-    it("status を持つエッジが 1 本も無ければ（列未導入）ループの確認だけで判定する", () => {
+    it("status を持たない入力（fixture 等）ならループの確認だけで判定する", () => {
       const notes = notesWith({ confirmedLoopIds: [loop.id, bLoop.id] });
       const noStatus = { ...both, edges: [{}, { status: null }] };
       expect(isReadyForInsight(notes, noStatus)).toBe(true);
