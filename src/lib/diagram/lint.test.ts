@@ -303,8 +303,9 @@ describe("lintDiagram: SFD 整合ルール", () => {
       [
         { id: "a", name: "残業時間" },
         { id: "b", name: "疲労" },
+        { id: "c", name: "作業効率" },
       ],
-      [edge("e1", "a", "b"), edge("e2", "b", "a")],
+      [edge("e1", "a", "b"), edge("e2", "b", "c"), edge("e3", "c", "a")],
     );
     expect(findings).toEqual([]);
   });
