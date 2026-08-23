@@ -17,6 +17,7 @@ export type SimSourceEdge = {
   sourceNodeId: string;
   targetNodeId: string;
   polarity: "+" | "-";
+  hasDelay: boolean;
 };
 
 /**
@@ -45,11 +46,13 @@ export function toSimNodes(nodes: SimSourceNode[]): SimNode[] {
  * simulate 側は flow → stock のエッジだけを流入/流出として解釈するため、ここでは全エッジを
  * 素直に渡してよい（関係ないエッジは simulate 内で無視される。lint の SFD 整合ルールが
  * 無視されるエッジを事前に warning として出す）。
+ * hasDelay も渡し、遅れ付きリンクは delaySteps 前の値で計算させる。
  */
 export function toSimEdges(edges: SimSourceEdge[]): SimEdge[] {
   return edges.map((edge) => ({
     sourceNodeId: edge.sourceNodeId,
     targetNodeId: edge.targetNodeId,
     polarity: edge.polarity,
+    hasDelay: edge.hasDelay,
   }));
 }

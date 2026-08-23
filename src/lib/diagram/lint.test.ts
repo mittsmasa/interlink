@@ -298,6 +298,16 @@ describe("lintDiagram: SFD 整合ルール", () => {
     expect(finding?.message).not.toContain("min");
   });
 
+  it("smooth / delay は関数名なので undefined-reference にならない", () => {
+    const findings = lintDiagram(
+      [stockNode("s", "在庫"), flowNode("f", "入荷", "smooth(在庫, 3) * 0.5")],
+      [edge("e1", "f", "s")],
+    );
+    expect(
+      findings.find((f) => f.rule === "undefined-reference"),
+    ).toBeUndefined();
+  });
+
   it("kind の無い CLD には SFD ルールを出さない", () => {
     const findings = lintDiagram(
       [

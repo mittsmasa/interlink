@@ -1,4 +1,4 @@
-import type { SimNode } from "@/lib/diagram/simulate";
+import type { SimEdge, SimNode } from "@/lib/diagram/simulate";
 
 // 図 → シミュレーション入力の変換は MCP（run_simulation）とも共用するため lib 側に置く
 export { toSimEdges, toSimNodes } from "@/lib/diagram/sim-inputs";
@@ -10,6 +10,14 @@ export { toSimEdges, toSimNodes } from "@/lib/diagram/sim-inputs";
  */
 export function canSimulate(simNodes: SimNode[]): boolean {
   return simNodes.some((node) => node.kind === "stock");
+}
+
+/**
+ * 図に「遅れ」付きのリンクがあるか。遅れステップ数の入力を出すかどうかの判定に使う
+ * （遅れが 1 本も無い図では効かない設定なので、パネルに出さない）。
+ */
+export function hasDelayedEdges(simEdges: SimEdge[]): boolean {
+  return simEdges.some((edge) => edge.hasDelay);
 }
 
 export type SeriesMode = "all" | "stock";

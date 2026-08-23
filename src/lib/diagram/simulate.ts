@@ -3,7 +3,7 @@ import {
   type MathNode,
   type OperatorNode,
   parse,
-  type SymbolNode,
+  SymbolNode,
 } from "mathjs";
 
 /**
@@ -30,6 +30,11 @@ export type SimEdge = {
   targetNodeId: string;
   /** flow → stock のとき + = 流入 / - = 流出 */
   polarity: "+" | "-";
+  /**
+   * 因果が効くまでに目立った時間遅れがあるか（図の edges.hasDelay）。
+   * true のリンクは値が `delaySteps` ステップ前のものとして読まれる（DELAY_NOTE 参照）
+   */
+  hasDelay?: boolean;
 };
 
 export type SimConfig = {
@@ -45,6 +50,12 @@ export type SimConfig = {
   overrides?: Record<string, number>;
   /** true なら stock を積分した直後に 0 でクランプし、負の量にならないようにする */
   nonNegativeStocks?: boolean;
+  /**
+   * hasDelay が付いたリンクを何ステップ遅らせるか（既定 1、1 以上の整数）。
+   * リンクごとではなく実行単位の一律指定。個別の時定数が要るときは式の
+   * smooth / delay 関数を使う（DELAY_NOTE 参照）
+   */
+  delaySteps?: number;
 };
 
 export type SimErrorType =
@@ -97,13 +108,45 @@ const ALLOWED_OPERATOR_FNS = new Set([
 /**
  * 式で呼べる関数のホワイトリスト。mathjs 組み込み（min / max / pow）に加え、
  * mathjs に無い clamp は評価 scope へ関数として渡す（SCOPE_FUNCTIONS）。
+ * smooth / delay は scope の関数ではなく、prepare が隠れストックへ書き換える
+ * （SMOOTHING_FUNCTIONS / DELAY_NOTE 参照）。
  * ユーザー定義関数・代入・行列など、ここに無いものは全て拒否する。
  */
-export const ALLOWED_FUNCTIONS = ["min", "max", "clamp", "pow"] as const;
+export const ALLOWED_FUNCTIONS = [
+  "min",
+  "max",
+  "clamp",
+  "pow",
+  "smooth",
+  "delay",
+] as const;
 const ALLOWED_FUNCTION_SET: ReadonlySet<string> = new Set(ALLOWED_FUNCTIONS);
+
+/**
+ * 遅れを表す関数。どちらも 1 次遅れ（ds/dt = (x − s) / tau）で中身は同じで、
+ * smooth = 情報の平滑化 / delay = 物質の遅れ、という意味づけだけが違う。
+ * 呼び出し 1 つにつき隠れストックを 1 つ持ち、stock と同じタイミングで更新する。
+ */
+export const SMOOTHING_FUNCTIONS: ReadonlySet<string> = new Set([
+  "smooth",
+  "delay",
+]);
+
+/** smooth / delay の引数の数（入力 x と時定数 tau） */
+const SMOOTHING_ARITY = 2;
 
 /** 許可される式の記法を一文で表した文言（エラーメッセージ / プロンプトで共用） */
 export const EXPRESSION_SYNTAX_NOTE = `四則演算（+ - * /）・べき乗（^）・関数 ${ALLOWED_FUNCTIONS.join("/")} と変数参照のみ`;
+
+/**
+ * DELAY_NOTE — 遅れの入り口は 2 つある（設計ノート 7 章「遅れ」）。
+ *
+ * 1. リンクの遅れ（`SimEdge.hasDelay` × `SimConfig.delaySteps`）: 値をそのまま
+ *    n ステップずらして読む（パイプライン遅延）。CLD の「遅れ」マークをそのまま
+ *    数値に効かせるための粗い遅れ。ずらす量は実行単位で一律
+ * 2. 式の関数（`smooth(x, tau)` / `delay(x, tau)`）: 1 次遅れ。リンクごとに時定数を
+ *    変えられ、なまし（急な変化が鈍る）も表現できる
+ */
 
 /** mathjs 組み込みに無い関数を scope 経由で供給する */
 const SCOPE_FUNCTIONS: Record<string, (...args: number[]) => number> = {
@@ -173,9 +216,18 @@ function findDisallowed(node: MathNode): string | null {
         return;
       }
       case "FunctionNode": {
-        const name = (n as FunctionNode).fn.name;
+        const fn = n as FunctionNode;
+        const name = fn.fn.name;
         if (!ALLOWED_FUNCTION_SET.has(name)) {
           violation = `関数 ${name} は使えません（${EXPRESSION_SYNTAX_NOTE}）`;
+          return;
+        }
+        // smooth / delay は隠れストックへ書き換えるので引数の形を先に固定する
+        if (
+          SMOOTHING_FUNCTIONS.has(name) &&
+          fn.args.length !== SMOOTHING_ARITY
+        ) {
+          violation = `関数 ${name} は引数を 2 つ取ります（${name}(値, 時定数)）`;
         }
         return;
       }
@@ -223,11 +275,35 @@ export function validateExpressionStructure(
   return null;
 }
 
+/** hasDelay のリンクで置き換えた参照。評価直前に scope[alias] へ遅延値を入れる */
+type DelayedInput = {
+  /** 式の中で元の参照を置き換えた ASCII エイリアス（_dN） */
+  alias: string;
+  /** 遅延して読む元ノード */
+  source: SimNode;
+};
+
+/** smooth / delay 呼び出し 1 つに対応する隠れストック */
+type HiddenState = {
+  /** この呼び出しを含む式のノード（エラー報告用） */
+  owner: SimNode;
+  /** 呼び出しを置き換えた ASCII エイリアス（_hN）。scope 上の状態そのもの */
+  alias: string;
+  /** 入力 x */
+  input: ReturnType<MathNode["compile"]>;
+  /** 時定数 tau */
+  tau: ReturnType<MathNode["compile"]>;
+};
+
 type Compiled = {
   node: SimNode;
   /** scope のキーになる ASCII プレースホルダ */
   placeholder: string;
   compiled: ReturnType<MathNode["compile"]>;
+  /** この式が hasDelay のリンクで参照している値 */
+  delayedInputs: DelayedInput[];
+  /** この式が持つ隠れストック。内側の呼び出しが先に並ぶ */
+  hidden: HiddenState[];
 };
 
 type Prepared = {
@@ -248,7 +324,7 @@ type Prepared = {
  * （設計ノート 6 章: ストックがループを断ち切る）。constant も事前に scope へ
  * 入るため順序づけ不要。順序づけ対象は flow/auxiliary 同士の参照のみ。
  */
-function prepare(nodes: SimNode[]): Prepared | SimError {
+function prepare(nodes: SimNode[], edges: SimEdge[]): Prepared | SimError {
   // 全ノードに一意な ASCII プレースホルダを割り当てる。日本語名でも mathjs が
   // パースできるよう、式中の名前参照をこのプレースホルダへ置換して評価する。
   const byName = new Map<string, SimNode>();
@@ -359,9 +435,70 @@ function prepare(nodes: SimNode[]): Prepared | SimError {
     depsByPlaceholder.set(placeholder, deps);
   }
 
-  const rootByPlaceholder = new Map(
-    computed.map((c) => [c.placeholder, c.root]),
-  );
+  // hasDelay のリンクを式の中の参照へ効かせる。X→T（T が式で X を参照）の X を
+  // 遅延エイリアスへ置換し、評価直前に n ステップ前の値を入れる。依存抽出（上）は
+  // 置換前の root に対して済ませてあるので、評価順序は遅れの有無で変わらない。
+  const nodeById = new Map(nodes.map((n) => [n.id, n]));
+  const delayedSourcesByTargetId = new Map<string, SimNode[]>();
+  for (const edge of edges) {
+    if (!edge.hasDelay) continue;
+    const source = nodeById.get(edge.sourceNodeId);
+    if (!source) continue;
+    const sources = delayedSourcesByTargetId.get(edge.targetNodeId);
+    if (sources) sources.push(source);
+    else delayedSourcesByTargetId.set(edge.targetNodeId, [source]);
+  }
+
+  let aliasIndex = 0;
+  const rootByPlaceholder = new Map<string, MathNode>();
+  const delayedByPlaceholder = new Map<string, DelayedInput[]>();
+  const hiddenByPlaceholder = new Map<string, HiddenState[]>();
+
+  for (const { node, placeholder, root } of computed) {
+    const symbols = new Set(collectSymbols(root));
+    const delayedInputs: DelayedInput[] = [];
+    const aliasBySource = new Map<string, string>();
+    for (const source of delayedSourcesByTargetId.get(node.id) ?? []) {
+      const sourcePlaceholder = placeholderByNodeId.get(source.id);
+      // 式が実際に参照していないリンクは遅らせようがない（情報リンクではない）
+      if (!sourcePlaceholder || !symbols.has(sourcePlaceholder)) continue;
+      if (aliasBySource.has(sourcePlaceholder)) continue;
+      const alias = `_d${aliasIndex++}`;
+      aliasBySource.set(sourcePlaceholder, alias);
+      delayedInputs.push({ alias, source });
+    }
+    const withDelays =
+      delayedInputs.length === 0
+        ? root
+        : root.transform((n) => {
+            if (n.type !== "SymbolNode") return n;
+            const alias = aliasBySource.get((n as SymbolNode).name);
+            return alias ? new SymbolNode(alias) : n;
+          });
+
+    // smooth / delay を隠れストックへ切り出す。子を先に処理するので、入れ子は
+    // 内側から順に _h 化され、外側の入力にはその状態シンボルが現れる
+    const hidden: HiddenState[] = [];
+    const extract = (n: MathNode): MathNode => {
+      const mapped = n.map(extract);
+      if (mapped.type !== "FunctionNode") return mapped;
+      const fn = mapped as FunctionNode;
+      if (!SMOOTHING_FUNCTIONS.has(fn.fn.name)) return mapped;
+      const alias = `_h${aliasIndex++}`;
+      hidden.push({
+        owner: node,
+        alias,
+        input: fn.args[0].compile(),
+        tau: fn.args[1].compile(),
+      });
+      return new SymbolNode(alias);
+    };
+
+    rootByPlaceholder.set(placeholder, extract(withDelays));
+    delayedByPlaceholder.set(placeholder, delayedInputs);
+    hiddenByPlaceholder.set(placeholder, hidden);
+  }
+
   const nodeByPlaceholder = new Map(
     computed.map((c) => [c.placeholder, c.node]),
   );
@@ -398,7 +535,13 @@ function prepare(nodes: SimNode[]): Prepared | SimError {
     const node = nodeByPlaceholder.get(placeholder);
     const root = rootByPlaceholder.get(placeholder);
     if (node && root)
-      ordered.push({ node, placeholder, compiled: root.compile() });
+      ordered.push({
+        node,
+        placeholder,
+        compiled: root.compile(),
+        delayedInputs: delayedByPlaceholder.get(placeholder) ?? [],
+        hidden: hiddenByPlaceholder.get(placeholder) ?? [],
+      });
     return null;
   };
 
@@ -452,8 +595,18 @@ export function simulate(
       },
     };
   }
+  const delaySteps = config.delaySteps ?? 1;
+  if (!Number.isInteger(delaySteps) || delaySteps < 1) {
+    return {
+      ok: false,
+      error: {
+        type: "invalid-config",
+        message: "delaySteps は 1 以上の整数である必要があります",
+      },
+    };
+  }
 
-  const prepared = prepare(nodes);
+  const prepared = prepare(nodes, edges);
   if ("type" in prepared) return { ok: false, error: prepared };
   const { placeholderByNodeId, stocks, constants, ordered } = prepared;
 
@@ -500,20 +653,28 @@ export function simulate(
   }
 
   const kindById = new Map(nodes.map((n) => [n.id, n.kind]));
+  const nodeById = new Map(nodes.map((n) => [n.id, n]));
 
   // 各 stock に流入/流出する flow エッジを集める（source が flow のものだけ）。
   // flow はプレースホルダで参照する（scope のキーがプレースホルダのため）。
+  // hasDelay が付いたリンクは現在値ではなく delaySteps 前の値を流す。
   const inflowsByStockId = new Map<
     string,
-    { flowPlaceholder: string; sign: 1 | -1 }[]
+    { flow: SimNode; flowPlaceholder: string; sign: 1 | -1; delayed: boolean }[]
   >(stocks.map((s) => [s.id, []]));
   for (const edge of edges) {
     const target = inflowsByStockId.get(edge.targetNodeId);
     if (!target) continue; // target が stock でない
     if (kindById.get(edge.sourceNodeId) !== "flow") continue;
     const flowPlaceholder = placeholderByNodeId.get(edge.sourceNodeId);
-    if (!flowPlaceholder) continue;
-    target.push({ flowPlaceholder, sign: edge.polarity === "+" ? 1 : -1 });
+    const flow = nodeById.get(edge.sourceNodeId);
+    if (!flowPlaceholder || !flow) continue;
+    target.push({
+      flow,
+      flowPlaceholder,
+      sign: edge.polarity === "+" ? 1 : -1,
+      delayed: edge.hasDelay === true,
+    });
   }
 
   // scope を初期化（constant と stock の初期値。overrides があればそちらを優先）。
@@ -541,9 +702,88 @@ export function simulate(
     return snap;
   };
 
+  const series: SimSnapshot[] = [];
+
+  /**
+   * hasDelay のリンクを通して読む値。series[i] は t=i 時点の値なので、clamp した
+   * index を引くだけで「履歴が足りない間は t=0 の値が続いていた」とみなせる
+   * （Vensim の DELAY FIXED と同じ慣例）。series がまだ空なのは t=0 の flow/aux
+   * 評価中だけで、そのときは同じステップで計算済みの現在値が t=0 の値にあたる。
+   */
+  const delayedValue = (source: SimNode, t: number): number => {
+    const snap = series[Math.max(0, t - delaySteps)];
+    if (snap) return snap[source.name];
+    const ph = placeholderByNodeId.get(source.id);
+    return ph === undefined ? Number.NaN : num(ph);
+  };
+
+  /** このステップで積分する隠れストック（smooth / delay）。① で積み ② で使う */
+  const pendingHidden: { state: HiddenState; input: number; tau: number }[] =
+    [];
+
+  /**
+   * smooth / delay の隠れストックを 1 つ評価する。初回は入力の現在値で初期化し
+   * （t=0 では入力と釣り合っている前提）、以降は ② の積分に渡す材料を積む。
+   */
+  const evaluateHidden = (state: HiddenState): SimError | null => {
+    const evaluateArg = (
+      arg: ReturnType<MathNode["compile"]>,
+      what: string,
+    ): number | SimError => {
+      let raw: unknown;
+      try {
+        raw = arg.evaluate(scope);
+      } catch (e) {
+        return {
+          type: "eval",
+          message: `「${state.owner.name}」の smooth/delay の${what}の評価に失敗しました: ${(e as Error).message}`,
+          nodeId: state.owner.id,
+        };
+      }
+      const value = expectFinite(
+        raw,
+        `${state.owner.name}」の smooth/delay の${what}`,
+      );
+      if (typeof value !== "number")
+        return { ...value, nodeId: state.owner.id };
+      return value;
+    };
+
+    const input = evaluateArg(state.input, "入力");
+    if (typeof input !== "number") return input;
+    // 初回だけ入力の現在値で初期化する（隠れストックの初期値 = x(0)）
+    if (scope[state.alias] === undefined) scope[state.alias] = input;
+    const tau = evaluateArg(state.tau, "時定数");
+    if (typeof tau !== "number") return tau;
+    if (tau <= 0) {
+      return {
+        type: "eval",
+        message: `「${state.owner.name}」の smooth/delay の時定数は正の数である必要があります`,
+        nodeId: state.owner.id,
+      };
+    }
+    pendingHidden.push({ state, input, tau });
+    return null;
+  };
+
   /** 確定順に flow/auxiliary を評価して scope を更新する。失敗したら SimError */
-  const evaluateOrdered = (): SimError | null => {
-    for (const { node, placeholder, compiled } of ordered) {
+  const evaluateOrdered = (t: number): SimError | null => {
+    pendingHidden.length = 0;
+    for (const {
+      node,
+      placeholder,
+      compiled,
+      delayedInputs,
+      hidden,
+    } of ordered) {
+      // 遅れ付きリンクの参照値と、隠れストックの現在値を先に scope へ入れる
+      for (const { alias, source } of delayedInputs) {
+        scope[alias] = delayedValue(source, t);
+      }
+      for (const state of hidden) {
+        const hiddenError = evaluateHidden(state);
+        if (hiddenError) return hiddenError;
+      }
       let raw: unknown;
       try {
         raw = compiled.evaluate(scope);
@@ -561,11 +801,9 @@ export function simulate(
     return null;
   };
 
-  const series: SimSnapshot[] = [];
-
   for (let t = 0; t < config.steps; t++) {
     // ① 確定順に flow/auxiliary を計算
-    const error = evaluateOrdered();
+    const error = evaluateOrdered(t);
     if (error) return { ok: false, error };
 
     // ④ このステップ開始時点（stock 更新前）のスナップショットを記録
@@ -577,9 +815,14 @@ export function simulate(
       const ph = placeholderByNodeId.get(s.id);
       if (ph === undefined) continue;
       let rate = 0;
-      for (const { flowPlaceholder, sign } of inflowsByStockId.get(s.id) ??
-        []) {
-        rate += sign * num(flowPlaceholder);
+      for (const {
+        flow,
+        flowPlaceholder,
+        sign,
+        delayed,
+      } of inflowsByStockId.get(s.id) ?? []) {
+        // 遅れ付きの流入/流出は delaySteps 前の流量で積む（パイプライン遅延）
+        rate += sign * (delayed ? delayedValue(flow, t) : num(flowPlaceholder));
       }
       let value = num(ph) + rate * config.dt;
       // 発散ガード: stock が非有限（Infinity / NaN）になったら打ち切る。
@@ -599,13 +842,31 @@ export function simulate(
       next.set(ph, value);
     }
 
-    // ③ stock を一斉に書き換える
+    // 隠れストック（smooth / delay の 1 次遅れ）も stock と同じ刻みで積む
+    for (const { state, input, tau } of pendingHidden) {
+      const current = scope[state.alias] as number;
+      const value = current + ((input - current) / tau) * config.dt;
+      if (!Number.isFinite(value)) {
+        return {
+          ok: false,
+          error: {
+            type: "diverged",
+            message: `「${state.owner.name}」の smooth/delay が t=${t + 1} で発散しました（dt を小さくするか、時定数を見直してください）`,
+            nodeId: state.owner.id,
+            step: t + 1,
+          },
+        };
+      }
+      next.set(state.alias, value);
+    }
+
+    // ③ stock と隠れストックを一斉に書き換える
     for (const [ph, v] of next) scope[ph] = v;
   }
 
   // ⑤ 最終ステップで更新した stock と、それに基づく flow/aux を t=steps として記録する。
   // これが無いと steps 回更新した最後の値が series に現れない（steps+1 件になる）
-  const finalError = evaluateOrdered();
+  const finalError = evaluateOrdered(config.steps);
   if (finalError) return { ok: false, error: finalError };
   series.push(snapshot(config.steps));
 

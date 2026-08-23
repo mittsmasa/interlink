@@ -14,6 +14,7 @@
  * このモジュールは canvas / loops 経路（mathjs 許容）からのみ参照する。
  */
 import {
+  type FunctionNode,
   type MathNode,
   type OperatorNode,
   type ParenthesisNode,
@@ -21,7 +22,11 @@ import {
   type SymbolNode,
 } from "mathjs";
 import { type DependencyLink, deriveDependencies } from "./dependencies";
-import { IDENTIFIER_RE, substituteNames } from "./simulate";
+import {
+  IDENTIFIER_RE,
+  SMOOTHING_FUNCTIONS,
+  substituteNames,
+} from "./simulate";
 
 export type SignedDependency = DependencyLink & {
   /** from→to の極性。構造から決まらなければ null（不定） */
@@ -107,6 +112,16 @@ function partialSign(node: MathNode, target: string): Sign {
         default:
           return containsSymbol(node, target) ? "mixed" : "0";
       }
+    }
+    case "FunctionNode": {
+      const fn = node as FunctionNode;
+      // smooth / delay は値を時間的に均すだけで向きは変えないので、入力（第 1 引数）
+      // の符号をそのまま伝える。時定数側に現れる場合は効き方が決まらないので mixed
+      if (SMOOTHING_FUNCTIONS.has(fn.fn.name) && fn.args.length === 2) {
+        if (containsSymbol(fn.args[1], target)) return "mixed";
+        return partialSign(fn.args[0], target);
+      }
+      return containsSymbol(node, target) ? "mixed" : "0";
     }
     default:
       return containsSymbol(node, target) ? "mixed" : "0";
