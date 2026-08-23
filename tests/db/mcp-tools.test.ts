@@ -41,6 +41,29 @@ describe("MCP tools", () => {
       | { properties?: Record<string, unknown> }
       | undefined;
     expect(diffSchema?.properties).toHaveProperty("upsertNodes");
+    expect(update?.inputSchema.properties).toHaveProperty("dryRun");
+    expect(update?.inputSchema.properties).toHaveProperty("expectedUpdatedAt");
+  });
+
+  it("tools/list で読み取り系に readOnlyHint、書き込み系に destructiveHint が付く", async () => {
+    const user = await createUser();
+    const client = await connectClient(user.id);
+    const { tools } = await client.listTools();
+    const byName = new Map(tools.map((t) => [t.name, t.annotations]));
+    expect(byName.get("list_projects")).toMatchObject({ readOnlyHint: true });
+    expect(byName.get("get_diagram")).toMatchObject({ readOnlyHint: true });
+    expect(byName.get("create_project")).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false,
+    });
+    expect(byName.get("update_diagram")).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: true,
+    });
+    expect(byName.get("update_notes")).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: true,
+    });
   });
 
   it("list_projects は自分のプロジェクトだけ返す", async () => {
@@ -246,9 +269,219 @@ describe("MCP tools", () => {
         diff: { deleteNodes: ["唯一の変数"] },
       },
     });
-    expect(wipe.isError).toBe(true);
+    // 検証で弾いた diff は isError ではなく ok:false（理由と構造化 warnings 付き）
+    expect(wipe.isError).toBeFalsy();
+    const payload = JSON.parse(textOf(wipe)) as { ok: boolean; error: string };
+    expect(payload.ok).toBe(false);
+    expect(payload.error).toContain("すべての変数を削除");
     const snapshot = await loadDiagramSnapshot(project.id);
     expect(snapshot.nodes).toHaveLength(1);
+  });
+
+  it("dryRun は計画と警告だけ返し図を変更しない", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+    await client.callTool({
+      name: "update_diagram",
+      arguments: {
+        projectId: project.id,
+        diff: { upsertNodes: [{ name: "残業時間" }] },
+      },
+    });
+
+    const result = await client.callTool({
+      name: "update_diagram",
+      arguments: {
+        projectId: project.id,
+        dryRun: true,
+        diff: {
+          upsertNodes: [{ name: "疲労" }],
+          upsertEdges: [
+            { source: "残業", target: "疲労", polarity: "+", rationale: "x" },
+          ],
+        },
+      },
+    });
+    expect(result.isError).toBeFalsy();
+    const payload = JSON.parse(textOf(result)) as {
+      ok: boolean;
+      dryRun: boolean;
+      plan: { createNodes: string[]; createEdges: string[] };
+      warnings: { code: string; target: string; suggestion?: string[] }[];
+      updatedAt: number;
+    };
+    expect(payload).toMatchObject({ ok: true, dryRun: true });
+    expect(payload.plan.createNodes).toEqual(["疲労"]);
+    expect(payload.plan.createEdges).toEqual([]);
+    expect(payload.warnings).toEqual([
+      expect.objectContaining({
+        code: "unresolved-edge",
+        target: "残業→疲労",
+        suggestion: ["残業時間"],
+      }),
+    ]);
+    expect(typeof payload.updatedAt).toBe("number");
+    const snapshot = await loadDiagramSnapshot(project.id);
+    expect(snapshot.nodes.map((n) => n.name)).toEqual(["残業時間"]);
+  });
+
+  it("適用すると閉じた / 開いたループと新しい lint 指摘が structure として返る", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+
+    const first = await client.callTool({
+      name: "update_diagram",
+      arguments: {
+        projectId: project.id,
+        diff: {
+          upsertNodes: [{ name: "残業時間" }, { name: "疲労" }],
+          upsertEdges: [
+            {
+              source: "残業時間",
+              target: "疲労",
+              polarity: "+",
+              rationale: "a",
+            },
+            {
+              source: "疲労",
+              target: "残業時間",
+              polarity: "+",
+              rationale: "b",
+            },
+          ],
+        },
+      },
+    });
+    const firstPayload = JSON.parse(textOf(first)) as {
+      structure: {
+        closedLoops: { id: string; polarity: string; nodeNames: string[] }[];
+        openedLoops: unknown[];
+        newFindings: unknown[];
+      };
+      updatedAt: number;
+    };
+    expect(firstPayload.structure.closedLoops).toHaveLength(1);
+    expect(firstPayload.structure.closedLoops[0].polarity).toBe("R");
+    expect(firstPayload.structure.openedLoops).toEqual([]);
+
+    // ループを切り、孤立ノードを足す → openedLoops 1 件 + isolated-node の新指摘
+    const second = await client.callTool({
+      name: "update_diagram",
+      arguments: {
+        projectId: project.id,
+        diff: {
+          upsertNodes: [{ name: "睡眠時間" }],
+          deleteEdges: [{ source: "疲労", target: "残業時間" }],
+        },
+      },
+    });
+    const secondPayload = JSON.parse(textOf(second)) as {
+      structure: {
+        closedLoops: unknown[];
+        openedLoops: { id: string }[];
+        newFindings: { rule: string }[];
+      };
+      updatedAt: number;
+    };
+    expect(secondPayload.structure.closedLoops).toEqual([]);
+    expect(secondPayload.structure.openedLoops.map((l) => l.id)).toEqual([
+      firstPayload.structure.closedLoops[0].id,
+    ]);
+    expect(secondPayload.structure.newFindings.map((f) => f.rule)).toContain(
+      "isolated-node",
+    );
+    expect(secondPayload.updatedAt).toBeGreaterThanOrEqual(
+      firstPayload.updatedAt,
+    );
+  });
+
+  it("無効操作だけの diff は isError ではなく ok:false と構造化 warnings を返す", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+    const result = await client.callTool({
+      name: "update_diagram",
+      arguments: {
+        projectId: project.id,
+        diff: { deleteNodes: ["存在しない"] },
+      },
+    });
+    expect(result.isError).toBeFalsy();
+    const payload = JSON.parse(textOf(result)) as {
+      ok: boolean;
+      error: string;
+      warnings: { code: string }[];
+    };
+    expect(payload.ok).toBe(false);
+    expect(payload.error).toContain("有効な操作がありません");
+    expect(payload.warnings[0].code).toBe("missing-node");
+  });
+
+  it("expectedUpdatedAt が古ければ conflict を返し図を変えない", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+
+    const read = await client.callTool({
+      name: "get_diagram",
+      arguments: { projectId: project.id },
+    });
+    const { updatedAt } = JSON.parse(textOf(read)) as { updatedAt: number };
+    expect(updatedAt).toBe(project.updatedAt);
+
+    // 同じ版を渡せば通る
+    const ok = await client.callTool({
+      name: "update_diagram",
+      arguments: {
+        projectId: project.id,
+        expectedUpdatedAt: updatedAt,
+        diff: { upsertNodes: [{ name: "残業時間" }] },
+      },
+    });
+    const okPayload = JSON.parse(textOf(ok)) as {
+      ok: boolean;
+      updatedAt: number;
+    };
+    expect(okPayload.ok).toBe(true);
+
+    // 古い版を渡すと conflict
+    const stale = await client.callTool({
+      name: "update_diagram",
+      arguments: {
+        projectId: project.id,
+        expectedUpdatedAt: updatedAt - 1,
+        diff: { upsertNodes: [{ name: "疲労" }] },
+      },
+    });
+    expect(stale.isError).toBeFalsy();
+    const stalePayload = JSON.parse(textOf(stale)) as {
+      ok: boolean;
+      error: string;
+      updatedAt: number;
+      expectedUpdatedAt: number;
+    };
+    expect(stalePayload).toMatchObject({
+      ok: false,
+      error: "conflict",
+      updatedAt: okPayload.updatedAt,
+      expectedUpdatedAt: updatedAt - 1,
+    });
+    const snapshot = await loadDiagramSnapshot(project.id);
+    expect(snapshot.nodes.map((n) => n.name)).toEqual(["残業時間"]);
+
+    // update_notes も同じロックに従う
+    const notesStale = await client.callTool({
+      name: "update_notes",
+      arguments: {
+        projectId: project.id,
+        expectedUpdatedAt: updatedAt - 1,
+        notes: { theme: "x" },
+      },
+    });
+    const notesPayload = JSON.parse(textOf(notesStale)) as { error: string };
+    expect(notesPayload.error).toBe("conflict");
   });
 
   it("create_project で新規プロジェクトを作れる", async () => {
@@ -348,6 +581,83 @@ describe("MCP interview context", () => {
     expect(payload.ok).toBe(true);
     expect(payload.interview.phase).toBe("draft");
     expect(payload.interview.agenda.length).toBeGreaterThan(0);
+  });
+
+  it("update_notes は既定で append、差分だけ送ると既存とマージされ保存後の notes と dropped が返る", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+
+    await client.callTool({
+      name: "update_notes",
+      arguments: {
+        projectId: project.id,
+        notes: {
+          theme: "残業が減らない",
+          stakeholders: [{ name: "自分", concerns: ["睡眠"] }],
+        },
+      },
+    });
+    const appended = await client.callTool({
+      name: "update_notes",
+      arguments: {
+        projectId: project.id,
+        notes: {
+          stakeholders: [{ name: "上司", concerns: ["納期"] }],
+          variableCandidates: [{ name: "残業時間" }],
+        },
+      },
+    });
+    const payload = JSON.parse(textOf(appended)) as {
+      ok: boolean;
+      mode: string;
+      notes: {
+        theme: string | null;
+        stakeholders: { name: string }[];
+        variableCandidates: { name: string }[];
+      };
+      dropped: { stakeholders: number; variableCandidates: number };
+      updatedAt: number;
+    };
+    expect(payload.mode).toBe("append");
+    expect(payload.notes.theme).toBe("残業が減らない");
+    expect(payload.notes.stakeholders.map((s) => s.name)).toEqual([
+      "自分",
+      "上司",
+    ]);
+    expect(payload.notes.variableCandidates.map((v) => v.name)).toEqual([
+      "残業時間",
+    ]);
+    expect(payload.dropped).toEqual({ stakeholders: 0, variableCandidates: 0 });
+    expect(typeof payload.updatedAt).toBe("number");
+
+    // replace は全置換
+    const replaced = await client.callTool({
+      name: "update_notes",
+      arguments: {
+        projectId: project.id,
+        mode: "replace",
+        notes: { theme: "整理し直し" },
+      },
+    });
+    const replacedPayload = JSON.parse(textOf(replaced)) as {
+      notes: { theme: string | null; stakeholders: unknown[] };
+    };
+    expect(replacedPayload.notes.theme).toBe("整理し直し");
+    expect(replacedPayload.notes.stakeholders).toEqual([]);
+  });
+
+  it("interview プロンプトは MCP 向け文言で、画面位置への言及を含まない", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+    const result = await client.getPrompt({
+      name: "interview",
+      arguments: { projectId: project.id },
+    });
+    const text = (result.messages[0].content as { text: string }).text;
+    expect(text).not.toContain("画面左下");
+    expect(text).toContain("シミュレーション結果を確認");
   });
 
   it("update_diagram / get_diagram の応答に interview の誘導が同梱される", async () => {

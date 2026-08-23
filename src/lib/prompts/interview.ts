@@ -228,14 +228,32 @@ export function formatNotesForPrompt(notes: InterviewNotes): string {
   return lines.join("\n");
 }
 
+/**
+ * プロンプトを出す面。chat = アプリ内チャット（キャンバスとシミュレーション
+ * パネルが同じ画面にある）/ mcp = 外部エージェント（画面を前提にできない）
+ */
+export type InterviewSurface = "chat" | "mcp";
+
+/** 面ごとに変える文言。画面の位置や UI 部品への言及はここに閉じ込める */
+const SURFACE_TEXT: Record<InterviewSurface, { checkSimulation: string }> = {
+  chat: {
+    checkSimulation: "画面左下のシミュレーションで動きを確認するよう促す",
+  },
+  mcp: {
+    checkSimulation: "シミュレーション結果を確認して挙動を一緒に読むよう促す",
+  },
+};
+
 /** 聞き取りチャットのシステムプロンプトを組み立てる */
 export function buildInterviewSystemPrompt(
   diagram: DiagramSnapshot,
   verification: DiagramVerification,
   guidance: InterviewGuidance,
+  options: { surface?: InterviewSurface } = {},
 ) {
   const { notes, phase, agenda } = guidance;
   const guide = PHASE_GUIDE[phase];
+  const surfaceText = SURFACE_TEXT[options.surface ?? "chat"];
 
   const agendaSection =
     agenda.length > 0
@@ -292,7 +310,7 @@ ${formatNotesForPrompt(notes)}
 - stock を変化させる flow は、flow→stock のエッジを polarity 付きで張る（+ = 流入 / − = 流出）。rationale も書く
 - ストックは「ひとつ前の値」を保持するので、flow/auxiliary の式が stock を参照しても循環にならない。一方 flow/auxiliary 同士で輪を作ると循環エラーになるため、間に stock を挟む
 - **説明だけで終わらせない。必ず同じ応答の中で updateDiagram ツールを呼び、kind と式・初期値・定数値を実際に書き込む**。「更新します」と述べたら、その応答内で必ずツールを実行すること
-- ツールで反映したあとに、何をストック/フローにしたか、式が何を表すかを一言で説明し、画面左下のシミュレーションで動きを確認するよう促す
+- ツールで反映したあとに、何をストック/フローにしたか、式が何を表すかを一言で説明し、${surfaceText.checkSimulation}
 - ツールが「式が無効」等の warning を返したら、式を四則演算に直して再送する
 
 ## 変数とリンクの品質

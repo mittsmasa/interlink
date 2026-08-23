@@ -101,7 +101,11 @@ export const chatRoute = new Hono().post(
             const current = await loadDiagramSnapshot(projectId);
             const planResult = planDiagramMutation(current, diff);
             if (!planResult.ok) {
-              return { ok: false, error: planResult.reason };
+              return {
+                ok: false,
+                error: planResult.reason,
+                warnings: planResult.warnings,
+              };
             }
             await applyMutationPlan(projectId, planResult.plan);
             const { plan } = planResult;
