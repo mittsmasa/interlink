@@ -3,9 +3,16 @@
   "configurations": [
     {
       "name": "dev-preview",
-      "runtimeExecutable": "fnox",
-      "runtimeArgs": ["exec", "--", "pnpm", "dev:preview"],
-      "port": 3000
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "PORTLESS=0",
+        "fnox",
+        "exec",
+        "--",
+        "pnpm",
+        "dev:preview"
+      ],
+      "autoPort": true
     }
   ]
 }

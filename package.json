@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "fnox exec -- next dev",
-    "dev:preview": "NEXT_PUBLIC_VERCEL_ENV=preview fnox exec -- next dev",
+    "dev:preview": "NEXT_PUBLIC_VERCEL_ENV=preview fnox exec -- portless run next dev",
     "build": "next build",
     "start": "next start",
     "lint": "biome check .",
@@ -70,6 +70,7 @@
     "@types/react-dom": "19.2.4",
     "drizzle-kit": "0.31.10",
     "lefthook": "2.1.10",
+    "portless": "0.15.5",
     "typescript": "7.0.2",
     "vite": "8.2.1",
     "vitest": "4.1.10"
