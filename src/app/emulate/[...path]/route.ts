@@ -1,4 +1,5 @@
 import type { NextRequest } from "next/server";
+import { appOrigin } from "@/lib/base-url";
 
 type RouteContext = { params: Promise<{ path: string[] }> };
 type MethodHandler = (req: NextRequest, ctx: RouteContext) => Promise<Response>;
@@ -35,14 +36,13 @@ const handlersPromise: Promise<EmulateHandlers> =
           ? `https://${process.env.VERCEL_URL}`
           : undefined;
 
+        // ローカル側のオリジンは appOrigin から導出する。portless 配下では
+        // worktree ごとに割り当て URL が変わるため、固定リストは維持できない
         const redirectUris = Array.from(
           new Set(
-            [
-              "http://localhost:3000/api/auth/oauth2/callback/google",
-              branchUrl && `${branchUrl}/api/auth/oauth2/callback/google`,
-              deploymentUrl &&
-                `${deploymentUrl}/api/auth/oauth2/callback/google`,
-            ].filter((v): v is string => Boolean(v)),
+            [appOrigin, branchUrl, deploymentUrl]
+              .filter((v): v is string => Boolean(v))
+              .map((origin) => `${origin}/api/auth/oauth2/callback/google`),
           ),
         );
 
@@ -76,13 +76,36 @@ const handlersPromise: Promise<EmulateHandlers> =
       })()
     : Promise.resolve(NOT_FOUND_HANDLERS);
 
+/**
+ * adapter に渡す前に Request の URL を公開オリジンへ揃える。
+ *
+ * `@emulators/adapter-next` は `new URL(req.url).origin` からのみ discovery の
+ * issuer / 各エンドポイントを組み立てる（origin を明示する設定は無い）。
+ * portless のような reverse proxy の後ろでは Next が見る host が転送先の
+ * `localhost:<random>` になるため、そのままでは内部アドレスをブラウザへ広告してしまう。
+ *
+ * origin が一致する場合（素の `next dev`）は元の Request をそのまま返すので回帰は無い。
+ */
+function withPublicOrigin(req: NextRequest): NextRequest {
+  const url = new URL(req.url);
+  if (url.origin === appOrigin) return req;
+
+  const publicUrl = new URL(`${url.pathname}${url.search}`, appOrigin);
+  return new Request(publicUrl, {
+    method: req.method,
+    headers: req.headers,
+    body: req.body,
+    duplex: "half",
+  } as RequestInit) as NextRequest;
+}
+
 async function dispatch(
   method: keyof EmulateHandlers,
   req: NextRequest,
   ctx: RouteContext,
 ) {
   const handlers = await handlersPromise;
-  return handlers[method](req, ctx);
+  return handlers[method](withPublicOrigin(req), ctx);
 }
 
 export const GET = (req: NextRequest, ctx: RouteContext) =>
