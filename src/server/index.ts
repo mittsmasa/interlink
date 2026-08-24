@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { auth } from "@/lib/auth";
+import { appOrigin } from "@/lib/base-url";
 import { chatRoute } from "./routes/chat";
 import { mcpRoute } from "./routes/mcp";
 
@@ -9,7 +10,7 @@ const app = new Hono().basePath("/api");
 app.use(
   "/auth/*",
   cors({
-    origin: process.env.BETTER_AUTH_URL ?? "http://localhost:3000",
+    origin: appOrigin,
     allowHeaders: ["Content-Type", "Authorization"],
     allowMethods: ["POST", "GET", "OPTIONS"],
     credentials: true,
