@@ -5,6 +5,7 @@ import {
   isCausallyLinked,
 } from "./dependencies";
 import type { Loop } from "./loops";
+import { formatRate, normalizeQuantity, parseUnit } from "./units";
 
 export type LintSeverity = "warning" | "info";
 
@@ -18,7 +19,9 @@ export type LintRule =
   | "stock-to-stock-edge"
   | "undefined-reference"
   | "speculative-link"
-  | "bidirectional-link";
+  | "bidirectional-link"
+  | "unit-mismatch-flow"
+  | "unit-missing-on-sfd";
 
 export type LintFinding = {
   rule: LintRule;
@@ -33,6 +36,7 @@ type LintNode = {
   name: string;
   kind?: string | null;
   expression?: string | null;
+  unit?: string | null;
 };
 type LintEdge = {
   id: string;
@@ -145,6 +149,10 @@ export function lintDiagram(
   }
 
   infos.push(...lintEdgeStatus(nodes, edges, options));
+
+  const units = lintUnits(nodes, edges);
+  warnings.push(...units.warnings);
+  infos.push(...units.infos);
 
   return [...warnings, ...infos];
 }
@@ -274,4 +282,83 @@ function lintEdgeStatus(
   }
 
   return infos;
+}
+
+// ============================================================
+// 単位の整合（`unit` 列を読む唯一のルール群）
+// ============================================================
+
+/**
+ * stock / flow の取り違えは構造ルール（lintStockFlow）では捕まらない。
+ * flow と stock を入れ替えても simulate は動いてしまい、積分の意味だけが壊れるため。
+ * 単位はその取り違えを外から確かめられる唯一のものさしなので、ここで読む
+ * （doc の m3-stock-and-flow.md 4 章「単位に /時間 が付くか」）。
+ *
+ * - unit-mismatch-flow（warning）: flow → stock で、flow の単位が「stock の単位 / 時間」の
+ *   率になっていない
+ * - unit-missing-on-sfd（info）: kind が stock / flow なのに単位が無い。整合を確かめる
+ *   手がかりが無いことに気づかせる（CLD 段階の kind: null には出さない）
+ *
+ * 単位は自由文字列なので、判定は確実に言えるときだけに絞る。読めない表記・時間でない分母
+ * （units.ts が null を返す）に加え、stock 自身が率のとき（例: 平滑化した成長率「%/年」）も
+ * 見送る。その場合フローは「%/年/年」になり、誰もそうは書かないため比べようがない。
+ */
+function lintUnits(
+  nodes: LintNode[],
+  edges: LintEdge[],
+): { warnings: LintFinding[]; infos: LintFinding[] } {
+  const warnings: LintFinding[] = [];
+  const infos: LintFinding[] = [];
+  const nodeById = new Map(nodes.map((n) => [n.id, n]));
+
+  for (const edge of edges) {
+    const flow = nodeById.get(edge.sourceNodeId);
+    const stock = nodeById.get(edge.targetNodeId);
+    if (flow?.kind !== "flow" || stock?.kind !== "stock") continue;
+
+    const flowUnit = parseUnit(flow.unit);
+    const stockUnit = parseUnit(stock.unit);
+    if (!flowUnit || !stockUnit || stockUnit.per) continue;
+
+    // 期待する率の見本。フロー側に時間の分母があればその時間単位に合わせて見せる
+    const expected = formatRate(stockUnit.quantity, flowUnit.per?.raw ?? "日");
+    if (!flowUnit.per) {
+      warnings.push({
+        rule: "unit-mismatch-flow",
+        severity: "warning",
+        message: `「${flow.name}」の単位が「${flow.unit}」ですが、ストック「${stock.name}」（単位: ${stock.unit}）を動かすフローは「${expected}」のような率（ストックの単位 / 時間）になっているはずです。時点の量なら kind は stock では?`,
+        nodeIds: [flow.id],
+        edgeIds: [edge.id],
+      });
+      continue;
+    }
+    if (
+      normalizeQuantity(flowUnit.quantity) !==
+      normalizeQuantity(stockUnit.quantity)
+    ) {
+      warnings.push({
+        rule: "unit-mismatch-flow",
+        severity: "warning",
+        message: `「${flow.name}」の単位「${flow.unit}」は、動かすストック「${stock.name}」（単位: ${stock.unit}）と量が違います。「${expected}」のような率になっているはずです。別の量ならこのリンクは flow → stock ではないのでは?`,
+        nodeIds: [flow.id],
+        edgeIds: [edge.id],
+      });
+    }
+  }
+
+  for (const node of nodes) {
+    if (node.kind !== "stock" && node.kind !== "flow") continue;
+    if (node.unit?.trim()) continue;
+    infos.push({
+      rule: "unit-missing-on-sfd",
+      severity: "info",
+      message:
+        node.kind === "stock"
+          ? `stock「${node.name}」に単位がありません。「ポイント」「人」のような時点の量を付けると、出入りするフローとの整合を確かめられます`
+          : `flow「${node.name}」に単位がありません。「ポイント/日」のような「ストックの単位 / 時間」の率を付けると、動かすストックとの整合を確かめられます`,
+      nodeIds: [node.id],
+    });
+  }
+
+  return { warnings, infos };
 }

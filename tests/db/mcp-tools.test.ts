@@ -413,6 +413,47 @@ describe("MCP tools", () => {
     expect(diagram.loops[0]).toMatchObject({ polarity: "R", derived: true });
   });
 
+  it("get_diagram の lintFindings に単位の不整合（unit-mismatch-flow）が載る", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+
+    // ストックは時点の量（ポイント）なのに、それを動かすフローが率になっていない
+    await client.callTool({
+      name: "update_diagram",
+      arguments: {
+        projectId: project.id,
+        diff: {
+          upsertNodes: [
+            { name: "疲労", kind: "stock", unit: "ポイント", initialValue: 30 },
+            { name: "残業増", kind: "flow", unit: "回", expression: "5" },
+          ],
+          upsertEdges: [
+            {
+              source: "残業増",
+              target: "疲労",
+              polarity: "+",
+              rationale: "残業が疲労を溜める",
+            },
+          ],
+        },
+      },
+    });
+
+    const read = await client.callTool({
+      name: "get_diagram",
+      arguments: { projectId: project.id },
+    });
+    const diagram = JSON.parse(textOf(read)) as {
+      lintFindings: { rule: string; severity: string; message: string }[];
+    };
+    const finding = diagram.lintFindings.find(
+      (f) => f.rule === "unit-mismatch-flow",
+    );
+    expect(finding?.severity).toBe("warning");
+    expect(finding?.message).toContain("「ポイント/日」");
+  });
+
   it("他ユーザーの project は get_diagram / update_diagram とも見つからない", async () => {
     const owner = await createUser();
     const attacker = await createUser();
@@ -1282,6 +1323,43 @@ describe("MCP simulation tools", () => {
     expect(warnings.some((w) => w.includes("図にない変数「残業時間」"))).toBe(
       true,
     );
+  });
+
+  it("run_simulation は単位の不整合も warnings に添える（数値は出るが意味が壊れているため）", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+    await client.callTool({
+      name: "update_diagram",
+      arguments: {
+        projectId: project.id,
+        diff: {
+          upsertNodes: [
+            { name: "疲労", kind: "stock", unit: "ポイント", initialValue: 30 },
+            { name: "残業増", kind: "flow", unit: "回", expression: "5" },
+          ],
+          upsertEdges: [
+            {
+              source: "残業増",
+              target: "疲労",
+              polarity: "+",
+              rationale: "残業が疲労を溜める",
+            },
+          ],
+        },
+      },
+    });
+
+    const result = await client.callTool({
+      name: "run_simulation",
+      arguments: { projectId: project.id },
+    });
+    const payload = JSON.parse(textOf(result)) as RunPayload;
+    // 計算自体は最後まで通る。だからこそ warning で意味の破れを知らせる
+    expect(payload.ok).toBe(true);
+    expect(
+      (payload.warnings ?? []).some((w) => w.includes("「ポイント/日」")),
+    ).toBe(true);
   });
 
   it("run_simulation の overrides は図を変えずに効き、不正なら invalid-override", async () => {
