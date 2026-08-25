@@ -171,10 +171,11 @@ describe("MCP tools", () => {
       ["残業時間→疲労", "疲労→残業時間"].sort(),
     );
     expect(loop.edges[0].source).toBe(loop.nodeNames[0]);
+    // 既定は detail: summary なので上限は要約側の 10（full なら MAX_LOOPS = 50）
     expect(diagram.loopLimit).toEqual({
       truncated: false,
       shown: 1,
-      limit: 50,
+      limit: 10,
     });
 
     // 返した id で確認済みループとして記録でき、agenda から未確認の指示が消える
@@ -868,6 +869,369 @@ describe("MCP tools", () => {
       project: { id: string; title: string };
     };
     expect(payload.project.title).toBe("MCP からの問い");
+  });
+});
+
+describe("get_diagram の絞り込み", () => {
+  /** 40 字を超える根拠（detail の要約対象） */
+  const LONG_RATIONALE =
+    "残業が続くと休む時間が削られ、睡眠不足が積み重なって疲れが抜けなくなる。半年ほど前からこの状態が続いている";
+
+  /**
+   * 疲労を通る R / B が交差し、2 ホップ先に疲労を通らない別ループがある図。
+   * R: 残業時間→疲労→ミス→残業時間 / B: 疲労⇄休息（遅れ付き）/ 残業時間⇄家庭時間
+   */
+  async function createFocusModel(client: Client, projectId: string) {
+    const update = await client.callTool({
+      name: "update_diagram",
+      arguments: {
+        projectId,
+        diff: {
+          upsertNodes: [
+            { name: "残業時間" },
+            { name: "疲労" },
+            { name: "ミス" },
+            { name: "休息" },
+            { name: "家庭時間" },
+          ],
+          upsertEdges: [
+            {
+              source: "残業時間",
+              target: "疲労",
+              polarity: "+",
+              rationale: LONG_RATIONALE,
+            },
+            { source: "疲労", target: "ミス", polarity: "+", rationale: "-" },
+            {
+              source: "ミス",
+              target: "残業時間",
+              polarity: "+",
+              rationale: "-",
+            },
+            { source: "疲労", target: "休息", polarity: "+", rationale: "-" },
+            {
+              source: "休息",
+              target: "疲労",
+              polarity: "-",
+              hasDelay: true,
+              rationale: "-",
+            },
+            {
+              source: "残業時間",
+              target: "家庭時間",
+              polarity: "-",
+              rationale: "-",
+            },
+            {
+              source: "家庭時間",
+              target: "残業時間",
+              polarity: "-",
+              rationale: "-",
+            },
+          ],
+        },
+      },
+    });
+    expect(update.isError).toBeFalsy();
+  }
+
+  type DiagramPayload = {
+    nodes?: { name: string }[];
+    edges?: { source: string; target: string; rationale: string | null }[];
+    dependencies?: { from: string; to: string }[];
+    loops?: { id: string; nodeNames: string[] }[];
+    loopLimit?: { truncated: boolean; shown: number; limit: number | null };
+    lintFindings?: { rule: string }[];
+    lintLimit?: { truncated: boolean; shown: number; limit: number | null };
+    archetypeMatches?: { archetypeId: string; loopIds: string[] }[];
+    focus?: {
+      nodeName: string;
+      depth: number;
+      shownNodes: number;
+      totalNodes: number;
+    };
+  };
+
+  async function readDiagram(
+    client: Client,
+    args: Record<string, unknown>,
+  ): Promise<DiagramPayload & Record<string, unknown>> {
+    const result = await client.callTool({
+      name: "get_diagram",
+      arguments: args,
+    });
+    expect(result.isError).toBeFalsy();
+    return JSON.parse(textOf(result));
+  }
+
+  it("include 未指定なら従来どおり全セクションが揃う", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+    await createFocusModel(client, project.id);
+
+    const payload = await readDiagram(client, { projectId: project.id });
+    expect(Object.keys(payload).sort()).toEqual(
+      [
+        "project",
+        "updatedAt",
+        "nodes",
+        "edges",
+        "dependencies",
+        "loops",
+        "loopLimit",
+        "lintFindings",
+        "lintLimit",
+        "archetypeMatches",
+        "metrics",
+        "sfdHints",
+        "simConfig",
+        "consistency",
+        "interviewNotes",
+        "interview",
+      ].sort(),
+    );
+  });
+
+  it("include で指定したセクションだけ返る", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+    await createFocusModel(client, project.id);
+
+    const payload = await readDiagram(client, {
+      projectId: project.id,
+      include: ["nodes", "loops"],
+    });
+    // project / updatedAt は版として常に返す
+    expect(Object.keys(payload).sort()).toEqual(
+      ["project", "updatedAt", "nodes", "loops", "loopLimit"].sort(),
+    );
+    expect(payload.nodes).toHaveLength(5);
+
+    // SFD 向けの sfdHints / simConfig も同じ単位で選べる
+    const sfd = await readDiagram(client, {
+      projectId: project.id,
+      include: ["sfd"],
+    });
+    expect(Object.keys(sfd).sort()).toEqual(
+      ["project", "updatedAt", "sfdHints", "simConfig"].sort(),
+    );
+  });
+
+  it("focus は指定した変数から depth ホップ以内の部分グラフと、その変数を通るループに絞る", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+    await createFocusModel(client, project.id);
+
+    const focused = await readDiagram(client, {
+      projectId: project.id,
+      focus: { nodeName: "疲労", depth: 1 },
+    });
+    // 家庭時間は残業時間の先（疲労から 2 ホップ）なので落ちる
+    expect(focused.nodes?.map((n) => n.name).sort()).toEqual(
+      ["ミス", "休息", "残業時間", "疲労"].sort(),
+    );
+    // 両端が部分グラフに残っているエッジだけ返る
+    expect(focused.edges?.map((e) => `${e.source}→${e.target}`).sort()).toEqual(
+      [
+        "残業時間→疲労",
+        "疲労→ミス",
+        "ミス→残業時間",
+        "疲労→休息",
+        "休息→疲労",
+      ].sort(),
+    );
+    // 疲労を通る R と B の 2 本だけ（残業時間⇄家庭時間 のループは消える）
+    expect(focused.loops).toHaveLength(2);
+    expect(focused.loops?.every((l) => l.nodeNames.includes("疲労"))).toBe(
+      true,
+    );
+    expect(focused.focus).toEqual({
+      nodeName: "疲労",
+      depth: 1,
+      shownNodes: 4,
+      totalNodes: 5,
+    });
+
+    // depth 2 なら家庭時間まで届くが、疲労を通らないループは依然として返らない
+    const wider = await readDiagram(client, {
+      projectId: project.id,
+      focus: { nodeName: "疲労", depth: 2 },
+    });
+    expect(wider.nodes).toHaveLength(5);
+    expect(wider.loops).toHaveLength(2);
+
+    // focus なしなら 3 本すべて返る
+    const all = await readDiagram(client, { projectId: project.id });
+    expect(all.loops).toHaveLength(3);
+    expect(all.focus).toBeUndefined();
+  });
+
+  it("focus は式由来リンク（dependencies）も両端で絞る", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+    await client.callTool({
+      name: "update_diagram",
+      arguments: {
+        projectId: project.id,
+        diff: {
+          upsertNodes: [
+            { name: "残高", kind: "stock", initialValue: 100 },
+            { name: "利息", kind: "flow", expression: "残高*0.1" },
+            { name: "手数料" },
+          ],
+          upsertEdges: [
+            { source: "利息", target: "残高", polarity: "+", rationale: "a" },
+            { source: "手数料", target: "残高", polarity: "-", rationale: "b" },
+          ],
+        },
+      },
+    });
+
+    // 手数料から 1 ホップは残高まで。残高→利息 の情報リンクは利息が範囲外なので落ちる
+    const near = await readDiagram(client, {
+      projectId: project.id,
+      focus: { nodeName: "手数料", depth: 1 },
+    });
+    expect(near.nodes?.map((n) => n.name).sort()).toEqual(["手数料", "残高"]);
+    expect(near.edges?.map((e) => `${e.source}→${e.target}`)).toEqual([
+      "手数料→残高",
+    ]);
+    expect(near.dependencies).toEqual([]);
+    expect(near.loops).toEqual([]);
+
+    // 2 ホップなら利息まで届き、情報リンクとそれで閉じる暫定ループも戻る
+    const wider = await readDiagram(client, {
+      projectId: project.id,
+      focus: { nodeName: "手数料", depth: 2 },
+    });
+    expect(wider.dependencies).toEqual([
+      { from: "残高", to: "利息", polarity: "+" },
+    ]);
+    // 手数料を通らないループなので loops には出ない
+    expect(wider.loops).toEqual([]);
+  });
+
+  it("図にない変数を focus すると近い変数名を添えたエラーになる", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+    await createFocusModel(client, project.id);
+
+    const result = await client.callTool({
+      name: "get_diagram",
+      arguments: { projectId: project.id, focus: { nodeName: "疲れ" } },
+    });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain("疲労");
+  });
+
+  it("detail は既定 summary で根拠を切り詰め、full で全文を返す", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+    await createFocusModel(client, project.id);
+
+    const summary = await readDiagram(client, { projectId: project.id });
+    const summarized = summary.edges?.find(
+      (e) => e.target === "疲労" && e.source === "残業時間",
+    );
+    expect(summarized?.rationale).toBe(
+      `${Array.from(LONG_RATIONALE).slice(0, 40).join("")}…`,
+    );
+    expect(summary.loopLimit).toMatchObject({ limit: 10, truncated: false });
+    expect(summary.lintLimit).toMatchObject({ limit: 10 });
+
+    const full = await readDiagram(client, {
+      projectId: project.id,
+      detail: "full",
+    });
+    const whole = full.edges?.find(
+      (e) => e.target === "疲労" && e.source === "残業時間",
+    );
+    expect(whole?.rationale).toBe(LONG_RATIONALE);
+    expect(full.loopLimit).toMatchObject({ limit: 50, truncated: false });
+    // full の lint は上限なし
+    expect(full.lintLimit).toMatchObject({ limit: null, truncated: false });
+    expect(full.lintFindings?.length).toBe(full.lintLimit?.shown);
+  });
+
+  it("archetypeMatches は focus / detail の影響を受けず、常に全ループから計算される", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+    await createFocusModel(client, project.id);
+
+    const all = await readDiagram(client, { projectId: project.id });
+    expect(all.archetypeMatches?.length).toBeGreaterThan(0);
+
+    const focused = await readDiagram(client, {
+      projectId: project.id,
+      include: ["archetypes"],
+      focus: { nodeName: "疲労", depth: 1 },
+    });
+    expect(focused.archetypeMatches).toEqual(all.archetypeMatches);
+  });
+
+  it("focus.depth の範囲外と未知の include はスキーマで弾かれる", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+    await createFocusModel(client, project.id);
+
+    const tooDeep = await client.callTool({
+      name: "get_diagram",
+      arguments: {
+        projectId: project.id,
+        focus: { nodeName: "疲労", depth: 7 },
+      },
+    });
+    expect(tooDeep.isError).toBe(true);
+    const negative = await client.callTool({
+      name: "get_diagram",
+      arguments: {
+        projectId: project.id,
+        focus: { nodeName: "疲労", depth: -1 },
+      },
+    });
+    expect(negative.isError).toBe(true);
+    const unknownSection = await client.callTool({
+      name: "get_diagram",
+      arguments: { projectId: project.id, include: ["loops", "everything"] },
+    });
+    expect(unknownSection.isError).toBe(true);
+  });
+
+  it("応答は整形インデントを含まない", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+    await createFocusModel(client, project.id);
+
+    const result = await client.callTool({
+      name: "get_diagram",
+      arguments: { projectId: project.id },
+    });
+    const text = textOf(result);
+    expect(text.startsWith('{"project":')).toBe(true);
+    expect(text).not.toContain("\n  ");
+  });
+
+  it("ツール説明とサーバー案内が絞り込みの使い方に触れている", async () => {
+    const user = await createUser();
+    const client = await connectClient(user.id);
+    const { tools } = await client.listTools();
+    const description =
+      tools.find((t) => t.name === "get_diagram")?.description ?? "";
+    for (const keyword of ["include", "focus", "detail"]) {
+      expect(description).toContain(keyword);
+    }
+    const instructions = client.getInstructions() ?? "";
+    expect(instructions).toContain("include");
+    expect(instructions).toContain("focus");
   });
 });
 
