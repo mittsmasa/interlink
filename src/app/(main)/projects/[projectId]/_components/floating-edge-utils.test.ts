@@ -347,8 +347,16 @@ describe("性能", () => {
     }));
     expect(edges.length).toBe(30);
 
-    const started = performance.now();
+    // 1 回目は JIT の暖機と初回の割り当てを含み、共有 CI ランナーではしきい値付近まで
+    // 揺れる。暖機してから最速値で測る（狙いは計算量の爆発を検知することで、
+    // 実行環境ごとの絶対時間を測ることではない）
     chooseEdgeRouting(edges, positions);
-    expect(performance.now() - started).toBeLessThan(50);
+    let fastest = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < 3; i++) {
+      const started = performance.now();
+      chooseEdgeRouting(edges, positions);
+      fastest = Math.min(fastest, performance.now() - started);
+    }
+    expect(fastest).toBeLessThan(50);
   });
 });
