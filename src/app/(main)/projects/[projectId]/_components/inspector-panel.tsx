@@ -13,6 +13,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import type { EdgeStatus, NodeKind, Polarity } from "@/db/schema";
+import {
+  describeConfidence,
+  type KindSuggestion,
+  NODE_KIND_LABELS,
+} from "@/lib/diagram/suggest-kinds";
 import type { Diagram, DiagramEdge, DiagramNode } from "@/lib/queries/diagrams";
 import { cn } from "@/lib/utils";
 import { deleteEdge, deleteNode, updateEdge, updateNode } from "../_actions";
@@ -23,6 +28,8 @@ type InspectorPanelProps = {
     | { kind: "node"; node: DiagramNode }
     | { kind: "edge"; edge: DiagramEdge };
   diagram: Diagram;
+  /** 未分類ノードの昇格候補（提案）。役割が決まっているノードでは undefined */
+  kindSuggestion?: KindSuggestion;
   onClose: () => void;
 };
 
@@ -30,6 +37,7 @@ export function InspectorPanel({
   projectId,
   selected,
   diagram,
+  kindSuggestion,
   onClose,
 }: InspectorPanelProps) {
   return (
@@ -52,6 +60,7 @@ export function InspectorPanel({
         <NodeForm
           projectId={projectId}
           node={selected.node}
+          suggestion={kindSuggestion}
           onClose={onClose}
         />
       ) : (
@@ -77,10 +86,12 @@ const KIND_OPTIONS: { value: NodeKind | null; label: string }[] = [
 function NodeForm({
   projectId,
   node,
+  suggestion,
   onClose,
 }: {
   projectId: string;
   node: DiagramNode;
+  suggestion?: KindSuggestion;
   onClose: () => void;
 }) {
   const [name, setName] = useState(node.name);
@@ -94,18 +105,21 @@ function NodeForm({
   const [unit, setUnit] = useState(node.unit ?? "");
   const [isPending, startTransition] = useTransition();
 
-  const save = () => {
+  /** 昇格候補の適用は「選ぶ = 決める」の 1 クリックにしたいので、kind を渡せるようにする */
+  const save = (kindOverride?: NodeKind) => {
+    const nextKind = kindOverride ?? kind;
     startTransition(async () => {
       const result = await updateNode(projectId, node.id, {
         name,
         memo,
         unit,
-        kind,
+        kind: nextKind,
         expression,
         initialValue: initialValue.trim() === "" ? null : Number(initialValue),
         value: value.trim() === "" ? null : Number(value),
       });
       if (result.ok) {
+        setKind(nextKind);
         toast.success("変数を更新しました");
       } else {
         toast.error(result.error ?? "更新できませんでした");
@@ -150,6 +164,13 @@ function NodeForm({
           ))}
         </div>
       </div>
+      {kind === null && suggestion && (
+        <KindSuggestionBox
+          suggestion={suggestion}
+          disabled={isPending}
+          onApply={() => save(suggestion.suggestedKind)}
+        />
+      )}
       {kind === "stock" && (
         <div className="space-y-1.5">
           <Label htmlFor="node-initial">初期値</Label>
@@ -207,7 +228,51 @@ function NodeForm({
           placeholder="例: 時間/週"
         />
       </div>
-      <FormFooter isPending={isPending} onSave={save} onDelete={remove} />
+      <FormFooter
+        isPending={isPending}
+        onSave={() => save()}
+        onDelete={remove}
+      />
+    </div>
+  );
+}
+
+/**
+ * 昇格候補の提示。決めるのはユーザーなので、あくまで「〜にしては?」の提案として
+ * 根拠を添えて出す（設計 doc 3 章「AI が kind を提案し、ユーザーが確定する」）
+ */
+function KindSuggestionBox({
+  suggestion,
+  disabled,
+  onApply,
+}: {
+  suggestion: KindSuggestion;
+  disabled: boolean;
+  onApply: () => void;
+}) {
+  const label = NODE_KIND_LABELS[suggestion.suggestedKind];
+  return (
+    <div className="space-y-2 rounded-md border border-dashed bg-muted/40 p-2.5">
+      <p className="font-serif text-xs">
+        提案: {label}
+        <span className="text-muted-foreground">
+          （確からしさ {describeConfidence(suggestion.confidence)}）
+        </span>
+      </p>
+      <ul className="space-y-1 text-[11px] text-muted-foreground leading-relaxed">
+        {suggestion.reasons.map((reason) => (
+          <li key={reason}>・{reason}</li>
+        ))}
+      </ul>
+      <Button
+        size="sm"
+        variant="outline"
+        className="w-full"
+        disabled={disabled}
+        onClick={onApply}
+      >
+        {label}にする
+      </Button>
     </div>
   );
 }

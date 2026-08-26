@@ -43,7 +43,17 @@ export const getProjectSummariesByUserId = cache(async (userId: string) => {
     where: eq(projects.userId, userId),
     orderBy: [asc(projects.createdAt)],
     with: {
-      nodes: { columns: { id: true, name: true, expression: true } },
+      nodes: {
+        columns: {
+          id: true,
+          name: true,
+          expression: true,
+          // quantify フェーズの判定が昇格状況と初期値を見るため必須。
+          // 落とすと一覧だけ定量化を検出できず、詳細ページと phase が食い違う
+          kind: true,
+          initialValue: true,
+        },
+      },
       edges: {
         columns: {
           id: true,

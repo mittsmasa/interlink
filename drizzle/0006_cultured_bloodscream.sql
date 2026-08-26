@@ -1,0 +1,1 @@
+ALTER TABLE `projects` ADD `sim_config` text;

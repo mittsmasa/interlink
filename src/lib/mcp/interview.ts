@@ -2,6 +2,7 @@ import { matchArchetypes } from "@/lib/diagram/archetypes";
 import { lintDiagram } from "@/lib/diagram/lint";
 import { buildLoopEdges } from "@/lib/diagram/loop-edges";
 import { detectLoops } from "@/lib/diagram/loops";
+import { parseSimConfig } from "@/lib/diagram/sim-config";
 import { loadDiagramSnapshot } from "@/lib/diagram/snapshot";
 import { buildInterviewAgenda } from "@/lib/interview/agenda";
 import {
@@ -14,7 +15,12 @@ import {
 } from "@/lib/interview/phase";
 import { buildInterviewSystemPrompt } from "@/lib/prompts/interview";
 
-type ProjectRow = { id: string; interviewNotes: string | null };
+type ProjectRow = {
+  id: string;
+  interviewNotes: string | null;
+  /** 定量化のアジェンダ（時間軸の問い）に使う。未指定なら未設定扱い */
+  simConfig?: string | null;
+};
 
 type DiagramSnapshot = Awaited<ReturnType<typeof loadDiagramSnapshot>>;
 
@@ -36,7 +42,11 @@ export function deriveGuidance(
   const { loops } = detectLoops(diagram.nodes, buildLoopEdges(diagram));
   const phaseInput = { nodes: diagram.nodes, edges: diagram.edges, loops };
   const phase = deriveInterviewPhase(notes, phaseInput);
-  const agenda = buildInterviewAgenda(notes, phaseInput, phase);
+  const agenda = buildInterviewAgenda(
+    notes,
+    { ...phaseInput, simConfig: parseSimConfig(project.simConfig ?? null) },
+    phase,
+  );
   return { phase, agenda, notes };
 }
 

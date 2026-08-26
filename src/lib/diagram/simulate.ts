@@ -189,6 +189,29 @@ export function substituteNames(
   return { code, unknown };
 }
 
+/**
+ * 式の中の変数参照を別名へ書き換える（ノードの改名に式を追従させる）。
+ * 照合は substituteNames と同じ規律で、識別子トークンの完全一致だけを見る
+ * （評価時の名前解決も正規化なしの完全一致のため）。関数呼び出しの名前は触らない。
+ */
+export function renameExpressionRefs(
+  expression: string,
+  from: string,
+  to: string,
+): { expression: string; renamed: boolean } {
+  let renamed = false;
+  const next = expression.replace(
+    TOKEN_RE,
+    (token, offset: number, full: string) => {
+      if (token !== from) return token;
+      if (isCallAhead(full, offset + token.length)) return token;
+      renamed = true;
+      return to;
+    },
+  );
+  return { expression: next, renamed };
+}
+
 /** 位置 from 以降が空白を挟んで `(` で始まるか（= 直前のトークンが関数呼び出し） */
 function isCallAhead(full: string, from: number): boolean {
   return /^\s*\(/.test(full.slice(from));
