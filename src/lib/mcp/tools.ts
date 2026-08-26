@@ -23,6 +23,16 @@ import {
   MAX_METRIC_NODES,
 } from "@/lib/diagram/metrics";
 import { applyMutationPlan } from "@/lib/diagram/mutate";
+import {
+  DEFAULT_SIM_DT,
+  DEFAULT_SIM_STEPS,
+  MAX_SIM_STEPS,
+  MAX_TIME_UNIT_LENGTH,
+  mergeSimConfig,
+  parseSimConfig,
+  type SimConfigRecord,
+  serializeSimConfig,
+} from "@/lib/diagram/sim-config";
 import { toSimEdges, toSimNodes } from "@/lib/diagram/sim-inputs";
 import {
   findBehaviorMismatch,
@@ -36,6 +46,11 @@ import {
   simulate,
 } from "@/lib/diagram/simulate";
 import { loadDiagramSnapshot } from "@/lib/diagram/snapshot";
+import {
+  type KindSuggestion,
+  MAX_KIND_SUGGESTIONS,
+  suggestKinds,
+} from "@/lib/diagram/suggest-kinds";
 import { checkBehaviorConsistency } from "@/lib/interview/consistency";
 import {
   interviewNotesSchema,
@@ -67,13 +82,10 @@ const SERVER_INSTRUCTIONS = `interlink は「問いの構造を図にする」�
 - 聞き取った事実（テーマ / 時間挙動 / 理想 / 関係者 / 変数候補）は update_notes に記録する。既定は append（差分だけ送れば既存とマージされる）。整理し直すときだけ mode: "replace" で全体を送る
 - 並行編集を避けたいときは get_diagram / 書き込み応答の updatedAt を expectedUpdatedAt に渡す。不一致なら ok: false と最新の updatedAt が返る
 - 書き込み系ツールの応答に含まれる interview.phase / interview.agenda は聞き取りの誘導。対話を進めるときはこれに従う
-- ストック&フロー化した図（kind / 式 / 初期値あり）は run_simulation で時間発展を計算し、stock ごとの要約（初期値・最終値・挙動パターン）で実感と突き合わせる。what-if は compare_scenarios（図は変更しない）`;
+- ストック&フロー化した図（kind / 式 / 初期値あり）は run_simulation で時間発展を計算し、stock ごとの要約（初期値・最終値・挙動パターン）で実感と突き合わせる。what-if は compare_scenarios（図は変更しない）
+- CLD を SFD へ昇格させるときは get_diagram の sfdHints（役割の候補と日本語の根拠）を提案の材料にする。役割は文脈で変わるので確定はユーザーに委ね、一時停止テスト（時間を止めても残るか）で確かめてから update_diagram で kind を書く
+- 時間軸（1 ステップ = 週 / 月 …、どこまで先を見るか）が決まったら update_sim_config に保存する。以後 run_simulation の既定値になる`;
 
-/** run_simulation / compare_scenarios の既定値（UI のシミュレーションパネルと同じ） */
-const DEFAULT_SIM_DT = 1;
-const DEFAULT_SIM_STEPS = 20;
-/** 1 回の呼び出しで回せるステップ数の上限（応答肥大・計算時間の歯止め） */
-const MAX_SIM_STEPS = 1000;
 const MAX_SCENARIOS = 8;
 /** 「遅れ」付きリンクの既定の遅らせ幅と上限（simulate の delaySteps） */
 const DEFAULT_DELAY_STEPS = 1;
@@ -92,7 +104,9 @@ const simConfigInput = {
     .number()
     .positive()
     .optional()
-    .describe(`時間刻み（既定 ${DEFAULT_SIM_DT}）`),
+    .describe(
+      `時間刻み（省略時はプロジェクトの保存値、未保存なら ${DEFAULT_SIM_DT}）`,
+    ),
   steps: z
     .number()
     .int()
@@ -100,7 +114,7 @@ const simConfigInput = {
     .max(MAX_SIM_STEPS)
     .optional()
     .describe(
-      `計算ステップ数（既定 ${DEFAULT_SIM_STEPS}、最大 ${MAX_SIM_STEPS}）`,
+      `計算ステップ数（省略時はプロジェクトの保存値、未保存なら ${DEFAULT_SIM_STEPS}。最大 ${MAX_SIM_STEPS}）`,
     ),
   nonNegativeStocks: z
     .boolean()
@@ -125,6 +139,26 @@ const overridesInput = z
   .describe(
     "変数名 → 値の上書き（図は変更しない）。stock の初期値と constant の値だけ指定できる",
   );
+
+/**
+ * 未分類ノードの昇格候補を応答用に整える。kind = null が 1 つも無ければ null
+ * （SFD 化が済んだ図では出さない）。**提案であって確定ではない**ので、
+ * ユーザーの確認を経てから update_diagram で kind を書く前提で返す
+ */
+function buildSfdHints(suggestions: KindSuggestion[]) {
+  if (suggestions.length === 0) return null;
+  const shown = suggestions.slice(0, MAX_KIND_SUGGESTIONS);
+  return {
+    total: suggestions.length,
+    shown: shown.length,
+    suggestions: shown.map((s) => ({
+      name: s.name,
+      suggestedKind: s.suggestedKind,
+      confidence: s.confidence,
+      reasons: s.reasons,
+    })),
+  };
+}
 
 type SimRunOutcome =
   | { ok: true; summary: SimulationSummary }
@@ -306,7 +340,7 @@ export function buildMcpServer(userId: string) {
     "get_diagram",
     {
       description:
-        "プロジェクトの因果ループ図の現在地を返す。変数・因果リンク・式由来の情報リンク（dependencies）に加え、導出済みの検証結果（フィードバックループと R/B 極性、lint 指摘、システム原型マッチ）、構造指標（metrics: ノードごとの次数とループ参加数の上位、介入候補 = 複数ループの交点・R と B の接点）、時間挙動と構造の整合判定（consistency: 期待する構造 / 見つかった構造 / 探り方）を含む。loops[].id は update_notes の confirmedLoopIds / hypotheses[].loopIds と archetypeMatches[].loopIds が指す ID。極性 ? は式の符号が構造から決まらない極性未定、derived は式由来リンクを含む暫定ループ。updatedAt は update_* の expectedUpdatedAt に渡せる",
+        "プロジェクトの因果ループ図の現在地を返す。変数・因果リンク・式由来の情報リンク（dependencies）に加え、導出済みの検証結果（フィードバックループと R/B 極性、lint 指摘、システム原型マッチ）、構造指標（metrics: ノードごとの次数とループ参加数の上位、介入候補 = 複数ループの交点・R と B の接点）、時間挙動と構造の整合判定（consistency: 期待する構造 / 見つかった構造 / 探り方）を含む。役割（kind）が未分類の変数があれば sfdHints に昇格候補（suggestedKind / confidence / 日本語の根拠）が付く。これは決定的なヒューリスティックによる**提案**で確定ではないので、一時停止テスト（時間を止めても残るか）をユーザーと確かめてから update_diagram で kind を書く。simConfig はシミュレーションの保存設定（dt / steps / timeUnit）で、run_simulation の既定値になる。loops[].id は update_notes の confirmedLoopIds / hypotheses[].loopIds と archetypeMatches[].loopIds が指す ID。極性 ? は式の符号が構造から決まらない極性未定、derived は式由来リンクを含む暫定ループ。updatedAt は update_* の expectedUpdatedAt に渡せる",
       inputSchema: z.object({
         projectId: z.string().min(1).describe("対象プロジェクトの ID"),
       }),
@@ -396,6 +430,10 @@ export function buildMcpServer(userId: string) {
             })),
         },
         consistency: checkBehaviorConsistency(guidance.notes, loopResult.loops),
+        sfdHints: buildSfdHints(
+          suggestKinds(diagram.nodes, loopEdges, loopResult.loops),
+        ),
+        simConfig: parseSimConfig(project.simConfig),
         interviewNotes: guidance.notes,
         interview: { phase: guidance.phase, agenda: guidance.agenda },
       });
@@ -605,6 +643,64 @@ export function buildMcpServer(userId: string) {
   );
 
   server.registerTool(
+    "update_sim_config",
+    {
+      description: `シミュレーションの設定（時間刻み dt / ステップ数 steps / 1 ステップが表す時間単位 timeUnit）をプロジェクトに保存する。run_simulation / compare_scenarios で引数を省略したときの既定値になり、アプリのシミュレーションパネルにも同じ値が出る。「1 ステップを週と見て 1 年先まで」のように時間軸が決まったら記録する。送ったキーだけ更新され、省略したキーは元のまま。timeUnit に null を送ると未設定へ戻る（steps の上限 ${MAX_SIM_STEPS}）`,
+      inputSchema: z.object({
+        projectId: z.string().min(1).describe("対象プロジェクトの ID"),
+        dt: z.number().positive().optional().describe("時間刻み"),
+        steps: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_SIM_STEPS)
+          .optional()
+          .describe("計算ステップ数"),
+        timeUnit: z
+          .string()
+          .max(MAX_TIME_UNIT_LENGTH)
+          .nullable()
+          .optional()
+          .describe("1 ステップが表す時間単位（例: 週、月、四半期）"),
+        expectedUpdatedAt: expectedUpdatedAtSchema,
+      }),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async ({ projectId, dt, steps, timeUnit, expectedUpdatedAt }) => {
+      const project = await findOwnedProject(projectId, userId);
+      if (!project) {
+        return toError("プロジェクトが見つかりません");
+      }
+      const conflict = checkVersion(project, expectedUpdatedAt);
+      if (conflict) return conflict;
+
+      const patch: Partial<SimConfigRecord> = {};
+      if (dt !== undefined) patch.dt = dt;
+      if (steps !== undefined) patch.steps = steps;
+      if (timeUnit !== undefined) patch.timeUnit = timeUnit;
+      const simConfig = mergeSimConfig(
+        parseSimConfig(project.simConfig),
+        patch,
+      );
+      await db
+        .update(projects)
+        .set({ simConfig: serializeSimConfig(simConfig) })
+        .where(eq(projects.id, projectId));
+      const saved = (await findOwnedProject(projectId, userId)) ?? project;
+      return toResult({
+        ok: true,
+        simConfig,
+        updatedAt: versionOf(saved),
+      });
+    },
+  );
+
+  server.registerTool(
     "delete_project",
     {
       description:
@@ -752,9 +848,11 @@ export function buildMcpServer(userId: string) {
         return toError("プロジェクトが見つかりません");
       }
       const diagram = await loadDiagramSnapshot(projectId);
+      // 引数 → プロジェクトの保存設定 → 既定値、の順で決める
+      const saved = parseSimConfig(project.simConfig);
       const config: SimConfig = {
-        dt: dt ?? DEFAULT_SIM_DT,
-        steps: steps ?? DEFAULT_SIM_STEPS,
+        dt: dt ?? saved.dt,
+        steps: steps ?? saved.steps,
         overrides,
         nonNegativeStocks,
         delaySteps: delaySteps ?? DEFAULT_DELAY_STEPS,
@@ -774,6 +872,7 @@ export function buildMcpServer(userId: string) {
       return toResult({
         ok: true,
         ...outcome.summary,
+        timeUnit: saved.timeUnit,
         warnings,
         mismatch,
       });
@@ -818,9 +917,10 @@ export function buildMcpServer(userId: string) {
         return toError("プロジェクトが見つかりません");
       }
       const diagram = await loadDiagramSnapshot(projectId);
+      const saved = parseSimConfig(project.simConfig);
       const base: SimConfig = {
-        dt: dt ?? DEFAULT_SIM_DT,
-        steps: steps ?? DEFAULT_SIM_STEPS,
+        dt: dt ?? saved.dt,
+        steps: steps ?? saved.steps,
         nonNegativeStocks,
         delaySteps: delaySteps ?? DEFAULT_DELAY_STEPS,
       };
@@ -850,6 +950,7 @@ export function buildMcpServer(userId: string) {
         ok: true,
         dt: base.dt,
         steps: base.steps,
+        timeUnit: saved.timeUnit,
         baseline: { stocks: baseline.summary.stocks },
         scenarios: results,
       });
