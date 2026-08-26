@@ -72,6 +72,8 @@ export type MutationWarningCode =
   | "kind-missing"
   /** diff 内で同名の upsertNodes が重複（2 つ目以降を無視） */
   | "duplicate-node"
+  /** diff 内で同じペアの upsertEdges が重複（後の指定で上書き） */
+  | "duplicate-edge"
   /** 同じ変数が upsertNodes / renameNodes と deleteNodes の両方にある（削除を無視） */
   | "delete-conflict"
   /** 改名元の変数が存在しない（その改名を無視） */
@@ -497,6 +499,13 @@ export function planDiagramMutation(
   const createEdges: MutationPlan["createEdges"] = [];
   const updateEdges: MutationPlan["updateEdges"] = [];
 
+  // 同じペアを 1 diff 内で 2 回 upsert された場合の行き先。ペアあたり 1 行に畳み、
+  // 後の指定で上書きする（DB のペア一意制約と揃える。2 本目を別行として作らない）
+  const plannedEdgeByPairKey = new Map<
+    string,
+    { list: "create" | "update"; index: number }
+  >();
+
   for (const edge of diff.upsertEdges) {
     const sourceKey = normalizeName(edge.source);
     const targetKey = normalizeName(edge.target);
@@ -517,8 +526,43 @@ export function planDiagramMutation(
       });
       continue;
     }
-    const existing = edgeByPairKey.get(`${sourceKey}→${targetKey}`);
+    const pairKey = `${sourceKey}→${targetKey}`;
+    const planned = plannedEdgeByPairKey.get(pairKey);
+    const existing = edgeByPairKey.get(pairKey);
+
+    if (planned) {
+      // 後勝ちで丸ごと差し替える（「最後の 1 件だけが送られた」のと同じ結果にする）
+      warnings.push({
+        code: "duplicate-edge",
+        target: `${edge.source}→${edge.target}`,
+        message: `リンク「${edge.source}→${edge.target}」が diff 内で重複しています（後の指定で上書き）`,
+      });
+      if (planned.list === "update") {
+        updateEdges[planned.index] = {
+          id: updateEdges[planned.index].id,
+          polarity: edge.polarity,
+          hasDelay: edge.hasDelay ?? false,
+          rationale: edge.rationale,
+          ...(edge.status !== undefined ? { status: edge.status } : {}),
+        };
+      } else {
+        createEdges[planned.index] = {
+          sourceName: edge.source,
+          targetName: edge.target,
+          polarity: edge.polarity,
+          hasDelay: edge.hasDelay ?? false,
+          rationale: edge.rationale,
+          status: edge.status ?? "inferred",
+        };
+      }
+      continue;
+    }
+
     if (existing) {
+      plannedEdgeByPairKey.set(pairKey, {
+        list: "update",
+        index: updateEdges.length,
+      });
       updateEdges.push({
         id: existing.id,
         polarity: edge.polarity,
@@ -527,6 +571,10 @@ export function planDiagramMutation(
         ...(edge.status !== undefined ? { status: edge.status } : {}),
       });
     } else {
+      plannedEdgeByPairKey.set(pairKey, {
+        list: "create",
+        index: createEdges.length,
+      });
       createEdges.push({
         sourceName: edge.source,
         targetName: edge.target,

@@ -64,7 +64,8 @@ export const chatRoute = new Hono().post(
 
     const diagram = await loadDiagramSnapshot(projectId);
     // 検証結果も埋め込み、ループの確かさを問う対話をできるようにする
-    const loopResult = detectLoops(diagram.nodes, buildLoopEdges(diagram));
+    const loopEdges = buildLoopEdges(diagram);
+    const loopResult = detectLoops(diagram.nodes, loopEdges);
     const notes = parseInterviewNotes(project.interviewNotes);
     const verification = {
       loopResult,
@@ -72,7 +73,7 @@ export const chatRoute = new Hono().post(
         loops: loopResult.loops,
         confirmedLoopIds: notes.confirmedLoopIds,
       }),
-      matches: matchArchetypes(loopResult.loops),
+      matches: matchArchetypes(loopResult.loops, loopEdges),
     };
 
     // 5 フェーズ聞き取りの誘導。ノート + 図から現在フェーズと

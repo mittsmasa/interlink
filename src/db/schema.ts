@@ -5,6 +5,7 @@ import {
   real,
   sqliteTable,
   text,
+  uniqueIndex,
 } from "drizzle-orm/sqlite-core";
 
 // ============================================================
@@ -422,7 +423,16 @@ export const edges = sqliteTable(
       .notNull()
       .$defaultFn(() => Date.now()),
   },
-  (t) => [index("edges_project_id_idx").on(t.projectId)],
+  (t) => [
+    index("edges_project_id_idx").on(t.projectId),
+    // 同じペアに 2 本張れると detectLoops が先頭 1 本だけを使い、+ と − が並んだとき
+    // R/B が createdAt 順の偶然で入れ替わる。ペアあたり 1 本を DB で保証する
+    uniqueIndex("edges_project_pair_unq").on(
+      t.projectId,
+      t.sourceNodeId,
+      t.targetNodeId,
+    ),
+  ],
 );
 
 // ============================================================

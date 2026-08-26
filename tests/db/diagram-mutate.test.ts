@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { db } from "@/db";
+import { edges } from "@/db/schema";
 import { planDiagramMutation } from "@/lib/diagram/apply-diff";
 import { diagramDiffSchema } from "@/lib/diagram/diff-schema";
 import { applyMutationPlan } from "@/lib/diagram/mutate";
@@ -203,5 +204,75 @@ describe("applyMutationPlan", () => {
     });
     const [edge] = (await loadDiagramSnapshot(project.id)).edges;
     expect(edge).toMatchObject({ polarity: "-", status: "confirmed" });
+  });
+
+  it("同じ (project, source, target) のエッジは 2 本目を DB が拒否する", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+
+    await applyDiff(project.id, {
+      upsertNodes: [{ name: "残業時間" }, { name: "疲労" }],
+      upsertEdges: [
+        {
+          source: "残業時間",
+          target: "疲労",
+          polarity: "+",
+          rationale: "残業が続くと疲れる",
+        },
+      ],
+    });
+
+    const [existing] = (await loadDiagramSnapshot(project.id)).edges;
+    // planDiagramMutation を通さない直挿し。ペア一意が DB 側で効いていることを確かめる。
+    // drizzle は "Failed query: ..." で包むため、SQLite の制約違反は cause 側に出る
+    const error = await db
+      .insert(edges)
+      .values({
+        projectId: project.id,
+        sourceNodeId: existing.sourceNodeId,
+        targetNodeId: existing.targetNodeId,
+        polarity: "-",
+        rationale: "同じペアの逆極性",
+      })
+      .then(
+        () => null,
+        (e: unknown) => e as { cause?: unknown },
+      );
+    expect(String(error?.cause)).toMatch(
+      /UNIQUE constraint failed: edges\.project_id/,
+    );
+
+    expect((await loadDiagramSnapshot(project.id)).edges).toHaveLength(1);
+  });
+
+  it("同一ペアが 1 つの diff 内で重複しても 1 本に畳まれる", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+
+    const plan = await applyDiff(project.id, {
+      upsertNodes: [{ name: "残業時間" }, { name: "疲労" }],
+      upsertEdges: [
+        {
+          source: "残業時間",
+          target: "疲労",
+          polarity: "+",
+          rationale: "先の指定",
+        },
+        {
+          source: "残業時間",
+          target: "疲労",
+          polarity: "-",
+          rationale: "後の指定",
+        },
+      ],
+    });
+
+    expect(plan.warnings.map((w) => w.code)).toEqual(["duplicate-edge"]);
+    const snapshot = await loadDiagramSnapshot(project.id);
+    expect(snapshot.edges).toHaveLength(1);
+    expect(snapshot.edges[0]).toMatchObject({
+      polarity: "-",
+      rationale: "後の指定",
+    });
   });
 });

@@ -217,6 +217,8 @@ export function exportDiagramToMarkdown(input: ExportMarkdownInput): string {
       lines.push(
         `- **${match.name}**（${related}）: ${match.description}`,
         `  - 確かめる問い: ${match.question}`,
+        `  - 定石の介入: ${match.prescription}`,
+        `  - よくある失敗: ${match.pitfalls}`,
       );
     }
   }
@@ -285,7 +287,8 @@ export function renderDiagramExport(
     })),
   };
   // 式由来の情報リンクも含めた集合でループを見る（キャンバス / MCP と同じ入口）
-  const loopResult = detectLoops(input.nodes, buildLoopEdges(input));
+  const loopEdges = buildLoopEdges(input);
+  const loopResult = detectLoops(input.nodes, loopEdges);
   if (format === "mermaid") {
     return exportDiagramToMermaid(diagram, loopResult.loops);
   }
@@ -294,7 +297,7 @@ export function renderDiagramExport(
     diagram,
     loops: loopResult.loops,
     truncated: loopResult.truncated,
-    matches: matchArchetypes(loopResult.loops),
+    matches: matchArchetypes(loopResult.loops, loopEdges),
     notes: input.notes,
   });
 }
