@@ -62,6 +62,7 @@ const SERVER_INSTRUCTIONS = `interlink は「問いの構造を図にする」�
 - 図の書き込みは update_diagram（差分形式）。変数は増減を語れる名詞句にし、因果リンクには根拠（rationale）を必ず添える。相関しか確認できていない関係を因果にしない
 - 図を持ち出すときは export_diagram（mermaid はそのまま描画できる。markdown は根拠付きの表）。プロジェクトの改名は update_project、削除は delete_project（取り消せない。ユーザーの明示的な指示があるときだけ）
 - resources でも読める: interlink://projects（一覧）、interlink://projects/{id}/diagram.md（図の markdown）、interlink://projects/{id}/notes.json（聞き取りノート）
+- 変数名の付け直し（lint の「方向を含んでいます」「動詞で終わっています」への対応など）は update_diagram の renameNodes。接続リンクと式の中の参照を保ったまま名前だけ変わる。削除して作り直すとリンクが消える
 - update_diagram は dryRun: true で適用せずに計画と警告だけ確認できる。適用すると閉じた/開いたループと新しい lint 指摘（structure）が返るので、get_diagram を読み直さなくても結果が分かる
 - warnings は {code, target, message, suggestion} の配列。除外された操作は黙って落ちるので、必ず目を通して suggestion を踏まえて再送する
 - 聞き取った事実（テーマ / 時間挙動 / 理想 / 関係者 / 変数候補）は update_notes に記録する。既定は append（差分だけ送れば既存とマージされる）。整理し直すときだけ mode: "replace" で全体を送る
@@ -406,7 +407,7 @@ export function buildMcpServer(userId: string) {
     "update_diagram",
     {
       description:
-        "因果ループ図を差分で更新する。変数・因果リンクの追加/更新/削除を一括で指定できる。既存の図への増分修正として使うこと。変数は ID ではなく名前で参照する。dryRun: true なら適用せずに計画（plan）と警告だけ返す。適用時は件数に加え、閉じた/開いたループと新しい lint 指摘（structure）を返す。warnings にある操作は除外されたまま残りが適用されるので、必ず確認して再送する",
+        "因果ループ図を差分で更新する。変数・因果リンクの追加/更新/削除/改名を一括で指定できる。既存の図への増分修正として使うこと。変数は ID ではなく名前で参照する。変数名を変えるときは renameNodes を使う（deleteNodes + upsertNodes だと接続リンクが消える）。dryRun: true なら適用せずに計画（plan）と警告だけ返す。適用時は件数に加え、閉じた/開いたループと新しい lint 指摘（structure）を返す。warnings にある操作は除外されたまま残りが適用されるので、必ず確認して再送する",
       inputSchema: z.object({
         projectId: z.string().min(1).describe("対象プロジェクトの ID"),
         diff: diagramDiffSchema,
@@ -442,14 +443,16 @@ export function buildMcpServer(userId: string) {
         });
       }
       const { plan } = planResult;
+      const nameOf = (id: string) =>
+        current.nodes.find((c) => c.id === id)?.name ?? id;
       const planSummary = {
         createNodes: plan.createNodes.map((n) => n.name),
-        updateNodes: plan.updateNodes.map(
-          (n) => current.nodes.find((c) => c.id === n.id)?.name ?? n.id,
+        // 名前は改名前のもの（改名分は renameNodes に from→to で出す）
+        updateNodes: plan.updateNodes.map((n) => nameOf(n.id)),
+        renameNodes: plan.updateNodes.flatMap((n) =>
+          n.name === undefined ? [] : [`${nameOf(n.id)}→${n.name}`],
         ),
-        deleteNodes: plan.deleteNodeIds.map(
-          (id) => current.nodes.find((c) => c.id === id)?.name ?? id,
-        ),
+        deleteNodes: plan.deleteNodeIds.map(nameOf),
         createEdges: plan.createEdges.map(
           (e) => `${e.sourceName}→${e.targetName}`,
         ),
