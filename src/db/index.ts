@@ -21,3 +21,15 @@ export const db = globalForDb.db ?? createDb();
 if (process.env.NODE_ENV !== "production") {
   globalForDb.db = db;
 }
+
+/** db.transaction のコールバックが受け取るハンドル */
+export type DbTransaction = Parameters<
+  Parameters<DbInstance["transaction"]>[0]
+>[0];
+
+/**
+ * db 本体とトランザクションハンドルの共通型。
+ * 同じクエリをトランザクションの内外どちらでも実行したい関数
+ * （リビジョン保存など）が実行主体を受け取るために使う
+ */
+export type DbClient = DbInstance | DbTransaction;

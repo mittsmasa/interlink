@@ -13,7 +13,7 @@ async function applyDiff(projectId: string, diffInput: unknown) {
     diagramDiffSchema.parse(diffInput),
   );
   if (!result.ok) throw new Error(`plan failed: ${result.reason}`);
-  await applyMutationPlan(projectId, result.plan);
+  await applyMutationPlan(projectId, result.plan, { source: "chat" });
   return result.plan;
 }
 

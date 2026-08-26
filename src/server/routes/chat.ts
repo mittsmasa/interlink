@@ -110,7 +110,9 @@ export const chatRoute = new Hono().post(
                 warnings: planResult.warnings,
               };
             }
-            await applyMutationPlan(projectId, planResult.plan);
+            await applyMutationPlan(projectId, planResult.plan, {
+              source: "chat",
+            });
             const { plan } = planResult;
             return {
               ok: true,

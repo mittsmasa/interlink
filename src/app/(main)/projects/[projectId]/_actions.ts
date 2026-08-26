@@ -2,7 +2,7 @@
 
 import { and, eq, ne } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
-import { db } from "@/db";
+import { type DbTransaction, db } from "@/db";
 import {
   type EdgeStatus,
   edges,
@@ -12,6 +12,7 @@ import {
   projects,
 } from "@/db/schema";
 import { normalizeName } from "@/lib/diagram/apply-diff";
+import { saveRevision } from "@/lib/diagram/revisions";
 import { validateExpressionStructure } from "@/lib/diagram/simulate";
 import { renameOwnedProject } from "@/lib/projects/manage";
 import { requireSession } from "@/lib/session";
@@ -28,11 +29,26 @@ async function getOwnedProject(projectId: string) {
   return project;
 }
 
-async function touchProject(projectId: string) {
-  await db
-    .update(projects)
-    .set({ updatedAt: Date.now() })
-    .where(eq(projects.id, projectId));
+/**
+ * 図を変える書き込みを 1 トランザクションにまとめる。
+ * 書き込み → projects.updatedAt → リビジョン保存を原子的に行うので、
+ * 図だけ変わって履歴が欠ける状態を作らない。revalidatePath は commit 後に呼ぶ。
+ *
+ * 位置の更新（updateNodePosition / updateNodePositions）はここを通さない。
+ * 差分に載らない列しか変わらず、ドラッグのたびに履歴が埋まるだけのため。
+ */
+async function writeDiagram(
+  projectId: string,
+  write: (tx: DbTransaction) => Promise<void>,
+) {
+  await db.transaction(async (tx) => {
+    await write(tx);
+    await tx
+      .update(projects)
+      .set({ updatedAt: Date.now() })
+      .where(eq(projects.id, projectId));
+    await saveRevision(tx, projectId, { source: "ui" });
+  });
   revalidatePath(`/projects/${projectId}`);
 }
 
@@ -136,30 +152,32 @@ export async function updateNode(
     return { ok: false as const, error: "定数値は数値で入力してください" };
   }
 
-  await db
-    .update(nodes)
-    .set({
-      name,
-      memo: input.memo.trim() || null,
-      unit: input.unit.trim() || null,
-      kind,
-      expression,
-      initialValue,
-      value,
-    })
-    .where(and(eq(nodes.id, nodeId), eq(nodes.projectId, projectId)));
-  await touchProject(projectId);
+  await writeDiagram(projectId, async (tx) => {
+    await tx
+      .update(nodes)
+      .set({
+        name,
+        memo: input.memo.trim() || null,
+        unit: input.unit.trim() || null,
+        kind,
+        expression,
+        initialValue,
+        value,
+      })
+      .where(and(eq(nodes.id, nodeId), eq(nodes.projectId, projectId)));
+  });
   return { ok: true as const };
 }
 
 export async function deleteNode(projectId: string, nodeId: string) {
   const project = await getOwnedProject(projectId);
   if (!project) return { ok: false as const };
-  // FK cascade で接続エッジも消える
-  await db
-    .delete(nodes)
-    .where(and(eq(nodes.id, nodeId), eq(nodes.projectId, projectId)));
-  await touchProject(projectId);
+  await writeDiagram(projectId, async (tx) => {
+    // FK cascade で接続エッジも消える
+    await tx
+      .delete(nodes)
+      .where(and(eq(nodes.id, nodeId), eq(nodes.projectId, projectId)));
+  });
   return { ok: true as const };
 }
 
@@ -175,16 +193,17 @@ export async function updateEdge(
 ) {
   const project = await getOwnedProject(projectId);
   if (!project) return { ok: false as const };
-  await db
-    .update(edges)
-    .set({
-      polarity: input.polarity,
-      hasDelay: input.hasDelay,
-      rationale: input.rationale.trim(),
-      status: input.status,
-    })
-    .where(and(eq(edges.id, edgeId), eq(edges.projectId, projectId)));
-  await touchProject(projectId);
+  await writeDiagram(projectId, async (tx) => {
+    await tx
+      .update(edges)
+      .set({
+        polarity: input.polarity,
+        hasDelay: input.hasDelay,
+        rationale: input.rationale.trim(),
+        status: input.status,
+      })
+      .where(and(eq(edges.id, edgeId), eq(edges.projectId, projectId)));
+  });
   return { ok: true as const };
 }
 
@@ -207,8 +226,9 @@ export async function createNode(
     return { ok: false as const, error: `変数「${trimmed}」は既にあります` };
   }
 
-  await db.insert(nodes).values({ projectId, name: trimmed, x, y });
-  await touchProject(projectId);
+  await writeDiagram(projectId, async (tx) => {
+    await tx.insert(nodes).values({ projectId, name: trimmed, x, y });
+  });
   return { ok: true as const };
 }
 
@@ -236,19 +256,25 @@ export async function createEdge(
     return { ok: false as const, error: "同じリンクが既にあります" };
   }
 
-  await db
-    .insert(edges)
-    .values({ projectId, sourceNodeId, targetNodeId, polarity, rationale: "" });
-  await touchProject(projectId);
+  await writeDiagram(projectId, async (tx) => {
+    await tx.insert(edges).values({
+      projectId,
+      sourceNodeId,
+      targetNodeId,
+      polarity,
+      rationale: "",
+    });
+  });
   return { ok: true as const };
 }
 
 export async function deleteEdge(projectId: string, edgeId: string) {
   const project = await getOwnedProject(projectId);
   if (!project) return { ok: false as const };
-  await db
-    .delete(edges)
-    .where(and(eq(edges.id, edgeId), eq(edges.projectId, projectId)));
-  await touchProject(projectId);
+  await writeDiagram(projectId, async (tx) => {
+    await tx
+      .delete(edges)
+      .where(and(eq(edges.id, edgeId), eq(edges.projectId, projectId)));
+  });
   return { ok: true as const };
 }
