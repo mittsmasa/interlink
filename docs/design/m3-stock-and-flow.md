@@ -11,6 +11,7 @@
 | diff の kind 別正規化と式の保存時検証 | [`src/lib/diagram/apply-diff.ts`](../../src/lib/diagram/apply-diff.ts) `normalizeSfdFields` |
 | 式からの情報リンク導出（依存 / 極性） | [`src/lib/diagram/dependencies.ts`](../../src/lib/diagram/dependencies.ts) / [`dependency-polarity.ts`](../../src/lib/diagram/dependency-polarity.ts) |
 | SFD 整合 lint | [`src/lib/diagram/lint.ts`](../../src/lib/diagram/lint.ts) `lintStockFlow` |
+| 単位の整合 lint（unit パーサ） | [`lint.ts`](../../src/lib/diagram/lint.ts) `lintUnits` / [`units.ts`](../../src/lib/diagram/units.ts) |
 | シミュレーションエンジン | [`src/lib/diagram/simulate.ts`](../../src/lib/diagram/simulate.ts) |
 | 遅れ（hasDelay × delaySteps / smooth / delay） | [`simulate.ts`](../../src/lib/diagram/simulate.ts) `DELAY_NOTE` |
 | 図 → simulate 入力の変換 | [`src/lib/diagram/sim-inputs.ts`](../../src/lib/diagram/sim-inputs.ts) |
@@ -97,7 +98,7 @@ CLD と SFD を別グラフとして二重管理しない。同一ノードの `
 
 この曖昧さがあるため、昇格は AI 提案 + ユーザー確定の対話で決める（3 章）。
 
-補足（実装上の注意）: 判定の主軸である一時停止テストは人の判断で、コードにはできない。上の補助のものさし 3 つだけは `suggestKinds` がルール化していて、`unit` 列を読むのはここだけ（「〜/週」のように分母が時間なら flow、時点の量なら stock）。単位の整合チェック（`unit-mismatch`）は引き続き未実装（8 章 Open Questions）。
+補足（実装上の注意）: 判定の主軸である一時停止テストは人の判断で、コードにはできない。上の補助のものさし 3 つは `suggestKinds` がルール化していて、kind を**提案**するために `unit` を読む（「〜/週」のように分母が時間なら flow、時点の量なら stock）。決まった kind が正しいかを**後から確かめる**側でも `unit` を読む: flow → stock の単位が「ストックの単位 / 時間」になっているかを lint が見る（`unit-mismatch-flow`。7 章の表）。どちらも単位表記は自由文字列なので、読めない表記は黙って見送る（`src/lib/diagram/units.ts`）。
 
 ### 疲労の問いを例にした分類
 
@@ -283,6 +284,11 @@ simulate が使うエッジは **flow → stock** だけ（極性 + = 流入 / �
 | `stock-without-flow` | stock に流入/流出する flow が無い（初期値のまま動かない） |
 | `stock-to-stock-edge` | stock 同士のリンク（量は flow を通してしか動かない） |
 | `undefined-reference` | 式が図に無い名前を参照（実行時エラーになる） |
+| `unit-mismatch-flow` | flow の単位が「ストックの単位 / 時間」の率になっていない（`lintUnits`） |
+
+上 4 つは「実行すると黙って無視される・エラーになる」構造の問題だが、`unit-mismatch-flow` だけは毛色が違う。**計算は最後まで通り、数値も出る。壊れるのは数字の意味だけ**（4 章の「1 日あたりの残業時間」と「累積残業時間」の取り違え）。実行前に気づく手立てが単位しか無いため、`run_simulation` の warnings にも他の SFD lint と並べて載せる。
+
+単位は自由文字列なので、判定は確実に言えるときだけに絞る。`src/lib/diagram/units.ts` が「時間/日」「人/月」のスラッシュ区切りと「時間」「人」の時点量だけを読み、それ以外（分母が時間単位でない「円/人」、区切りが 2 つ以上、空）は null を返して黙って見送る。stock 自身の単位が率のとき（平滑化した成長率「%/年」など）も、フローが「%/年/年」になり比べようがないので判定しない。単位が無くて確かめられない stock / flow には `unit-missing-on-sfd`（info）で単位を促す。
 
 ### 設定と安全装置（実装で確定）
 
@@ -357,7 +363,7 @@ CLD では「効くまでに時間がかかる」リンクに遅れマークを�
 ### Open Questions（未決）
 
 - シナリオ（`overrides` の組み合わせ）の永続化。dt / steps は永続化したが、シナリオは名前付きで保存する器が要るので別途
-- 単位の整合チェックをどこまでやるか（`unit` を読むのは `suggestKinds` だけで、`unit-mismatch` lint は未実装）
+- 単位の整合チェックをどこまで広げるか（flow → stock が率かどうかは `unit-mismatch-flow` で見るようになった。式の中の単位（`残高 * 利率` の次元）と、`simConfig.timeUnit` と flow の分母の突き合わせは未着手）
 - 昇格ヒューリスティックの語彙をどう育てるか（今は小さな辞書。誤検知が続く語を運用しながら足し引きする）
 - 式エディタの UX（補完、ノード名参照の入力支援）
 - 数値積分の精度（オイラー法のまま。RK4 が要るかは実例待ち）

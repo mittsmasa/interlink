@@ -98,6 +98,8 @@ const SFD_LINT_RULES = new Set([
   "stock-without-flow",
   "stock-to-stock-edge",
   "undefined-reference",
+  // 数値は出るのに意味が壊れる唯一の型。実行結果を読む前に必ず見せる
+  "unit-mismatch-flow",
 ]);
 
 const simConfigInput = {
