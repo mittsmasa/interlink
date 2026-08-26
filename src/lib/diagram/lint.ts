@@ -20,6 +20,7 @@ export type LintRule =
   | "undefined-reference"
   | "speculative-link"
   | "bidirectional-link"
+  | "conflicting-link"
   | "unit-mismatch-flow"
   | "unit-missing-on-sfd";
 
@@ -44,6 +45,8 @@ type LintEdge = {
   targetNodeId: string;
   /** 未指定（旧 fixture 等）は確からしさを判定しない */
   status?: EdgeStatus;
+  /** 未指定なら極性の食い違い（conflicting-link）は見ない */
+  polarity?: "+" | "-";
 };
 
 /**
@@ -131,6 +134,7 @@ export function lintDiagram(
   }
 
   warnings.push(...lintStockFlow(nodes, edges));
+  warnings.push(...lintConflictingLinks(nodes, edges));
 
   // 式が他ノードを参照しているのに、図にそのリンク（因果エッジ）が無い依存を気づかせる。
   // 依存の真実は式にあるため（simulate と同様）、式から導出して既存エッジと突き合わせる。
@@ -222,6 +226,44 @@ function lintStockFlow(nodes: LintNode[], edges: LintEdge[]): LintFinding[] {
     }
   }
 
+  return findings;
+}
+
+/**
+ * 同じ (source, target) に極性の違うリンクが並んでいる状態を拾う。
+ * DB は ペアごとに 1 本の unique index で新規発生を塞いでいるが、lint は DB を経由しない
+ * 入力（index 導入前のデータ、取り込み経路、テスト fixture）でも呼ばれる。
+ * 極性の矛盾は「どちらが実感に近いか」を確かめるべき論点なので、潰さず対話に載せる。
+ */
+function lintConflictingLinks(
+  nodes: LintNode[],
+  edges: LintEdge[],
+): LintFinding[] {
+  const nameById = new Map(nodes.map((n) => [n.id, n.name]));
+  const byPair = new Map<string, LintEdge[]>();
+  for (const edge of edges) {
+    if (edge.polarity === undefined) continue;
+    const key = `${edge.sourceNodeId} ${edge.targetNodeId}`;
+    const group = byPair.get(key);
+    if (group) {
+      group.push(edge);
+    } else {
+      byPair.set(key, [edge]);
+    }
+  }
+
+  const findings: LintFinding[] = [];
+  for (const group of byPair.values()) {
+    if (new Set(group.map((e) => e.polarity)).size < 2) continue;
+    const [first] = group;
+    findings.push({
+      rule: "conflicting-link",
+      severity: "warning",
+      message: `「${nameById.get(first.sourceNodeId) ?? ""}」→「${nameById.get(first.targetNodeId) ?? ""}」の極性が + と − で食い違っています。どちらが実感に近いですか?`,
+      nodeIds: [first.sourceNodeId, first.targetNodeId],
+      edgeIds: group.map((e) => e.id),
+    });
+  }
   return findings;
 }
 

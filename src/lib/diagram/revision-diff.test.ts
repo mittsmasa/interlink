@@ -136,7 +136,9 @@ describe("diffRevisions", () => {
     expect(diff.edges.changed).toHaveLength(2);
   });
 
-  it("同じ変数ペアに複数のリンクがあっても ID で区別する", () => {
+  // DB では edges_project_pair_unq がペアを 1 本に縛るが、差分は snapshot を
+  // そのまま受け取る純粋関数なので、制約より前の snapshot が来ても壊れないこと
+  it("同じ変数ペアに複数のリンクがある snapshot でも ID で区別する", () => {
     const before = snapshot(
       [overtime, fatigue],
       [edge("e1", overtime, fatigue)],

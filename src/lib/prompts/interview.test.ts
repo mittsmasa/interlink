@@ -109,6 +109,8 @@ describe("buildVerificationPromptSection", () => {
             "成長の自己強化ループを、制約のバランスループが抑える構造",
           question:
             "R1 の成長を B1 が抑えているなら、制約になっているものは何でしょう?",
+          prescription: "成長を押すのではなく、いま効いている制約を取り除く",
+          pitfalls: "もっと頑張る、はループを強めるだけに終わる",
           loopIds: ["loop:1", "loop:2"],
         },
       ],

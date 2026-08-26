@@ -202,7 +202,7 @@ export function VerificationPanel({
               <h2 className="mb-2 font-serif text-muted-foreground text-xs tracking-wide">
                 似ている構造
               </h2>
-              <ul className="space-y-2">
+              <ul className="space-y-3">
                 {matches.map((match) => (
                   <li key={match.archetypeId} className="px-1.5">
                     <p className="font-serif text-sm" title={match.description}>
@@ -211,6 +211,21 @@ export function VerificationPanel({
                     <p className="mt-0.5 text-muted-foreground text-xs leading-relaxed">
                       {match.question}
                     </p>
+                    <div className="mt-1.5 space-y-1 border-l pl-2">
+                      <p className="flex gap-1.5 text-xs leading-relaxed">
+                        <span aria-hidden className="text-muted-foreground">
+                          →
+                        </span>
+                        <span>{match.prescription}</span>
+                      </p>
+                      <p className="flex gap-1.5 text-muted-foreground text-xs leading-relaxed">
+                        <WarningIcon
+                          aria-hidden
+                          className="mt-0.5 size-3 shrink-0 text-(--vermilion)"
+                        />
+                        <span>{match.pitfalls}</span>
+                      </p>
+                    </div>
                   </li>
                 ))}
               </ul>

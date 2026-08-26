@@ -375,7 +375,7 @@ export function buildMcpServer(userId: string) {
   server.registerTool(
     "get_diagram",
     {
-      description: `プロジェクトの因果ループ図の現在地を返す。変数・因果リンク・式由来の情報リンク（dependencies）に加え、導出済みの検証結果（フィードバックループと R/B 極性、lint 指摘、システム原型マッチ）、構造指標（metrics: ノードごとの次数とループ参加数の上位、介入候補 = 複数ループの交点・R と B の接点）、時間挙動と構造の整合判定（consistency: 期待する構造 / 見つかった構造 / 探り方）を含む。役割（kind）が未分類の変数があれば sfdHints に昇格候補（suggestedKind / confidence / 日本語の根拠）が付く。これは決定的なヒューリスティックによる**提案**で確定ではないので、一時停止テスト（時間を止めても残るか）をユーザーと確かめてから update_diagram で kind を書く。simConfig はシミュレーションの保存設定（dt / steps / timeUnit）で、run_simulation の既定値になる。loops[].id は update_notes の confirmedLoopIds / hypotheses[].loopIds と archetypeMatches[].loopIds が指す ID。極性 ? は式の符号が構造から決まらない極性未定、derived は式由来リンクを含む暫定ループ。updatedAt は update_* の expectedUpdatedAt に渡せる。
+      description: `プロジェクトの因果ループ図の現在地を返す。変数・因果リンク・式由来の情報リンク（dependencies）に加え、導出済みの検証結果（フィードバックループと R/B 極性、lint 指摘、システム原型マッチ = 構造の説明と確認の問いに加え、定石の介入 prescription とよくある失敗 pitfalls）、構造指標（metrics: ノードごとの次数とループ参加数の上位、介入候補 = 複数ループの交点・R と B の接点）、時間挙動と構造の整合判定（consistency: 期待する構造 / 見つかった構造 / 探り方）を含む。役割（kind）が未分類の変数があれば sfdHints に昇格候補（suggestedKind / confidence / 日本語の根拠）が付く。これは決定的なヒューリスティックによる**提案**で確定ではないので、一時停止テスト（時間を止めても残るか）をユーザーと確かめてから update_diagram で kind を書く。simConfig はシミュレーションの保存設定（dt / steps / timeUnit）で、run_simulation の既定値になる。loops[].id は update_notes の confirmedLoopIds / hypotheses[].loopIds と archetypeMatches[].loopIds が指す ID。極性 ? は式の符号が構造から決まらない極性未定、derived は式由来リンクを含む暫定ループ。updatedAt は update_* の expectedUpdatedAt に渡せる。
 
 大きい図（20 変数以上）では include / focus / detail で絞ることを推奨する。include は読むセクションだけを選ぶ（未指定なら全部）。focus: {nodeName, depth} はその変数から depth ホップ（既定 ${DEFAULT_FOCUS_DEPTH}、最大 ${MAX_FOCUS_DEPTH}）以内の部分グラフと、その変数を通るループだけに絞る（「疲労の周りだけ見たい」を 1 呼び出しで）。detail は既定 summary で、rationale を ${SUMMARY_RATIONALE_LENGTH} 字に切り、loops / lintFindings を各 ${SUMMARY_LOOP_LIMIT} 件までにする（切ったかどうかは loopLimit / lintLimit を見る）。根拠の全文や全ループが要るときだけ detail: "full"。focus が効くのは nodes / edges / dependencies / loops だけで、metrics / consistency / archetypeMatches / sfdHints は図全体から導出した値のまま返る（部分グラフで計算し直すと意味が変わるため。archetypeMatches[].loopIds が絞り込み後の loops[].id に無いことがある）`,
       inputSchema: z.object({
@@ -558,7 +558,7 @@ export function buildMcpServer(userId: string) {
           ? { lintFindings: lintView.items, lintLimit: lintView.info }
           : {}),
         ...(sections.has("archetypes")
-          ? { archetypeMatches: matchArchetypes(loopResult.loops) }
+          ? { archetypeMatches: matchArchetypes(loopResult.loops, loopEdges) }
           : {}),
         ...(metrics
           ? {
