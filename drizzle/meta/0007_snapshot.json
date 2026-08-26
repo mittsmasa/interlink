@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "a1dfc4c7-b5e3-408f-b61a-6d57438ab99b",
-  "prevId": "25bd85a0-e2d7-43ad-a8ea-a71803bfd879",
+  "id": "7a3f77e3-e355-48d6-9033-08bd254f4c59",
+  "prevId": "a1dfc4c7-b5e3-408f-b61a-6d57438ab99b",
   "tables": {
     "accounts": {
       "name": "accounts",
@@ -378,6 +378,11 @@
           "name": "edges_project_id_idx",
           "columns": ["project_id"],
           "isUnique": false
+        },
+        "edges_project_pair_unq": {
+          "name": "edges_project_pair_unq",
+          "columns": ["project_id", "source_node_id", "target_node_id"],
+          "isUnique": true
         }
       },
       "foreignKeys": {

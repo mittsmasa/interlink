@@ -1,9 +1,11 @@
-import type { EdgeStatus } from "@/db/schema";
+import type { EdgeStatus, NodeKind } from "@/db/schema";
 import type { Loop } from "@/lib/diagram/loops";
 import {
   computeDiagramMetrics,
   describeCandidate,
 } from "@/lib/diagram/metrics";
+import type { SimConfigRecord } from "@/lib/diagram/sim-config";
+import { describeSuggestion, suggestKinds } from "@/lib/diagram/suggest-kinds";
 import { checkBehaviorConsistency, describeInconsistency } from "./consistency";
 import { HYPOTHESIS_STATUS_LABELS, type InterviewNotes } from "./notes";
 import type { InterviewPhase } from "./phase";
@@ -14,9 +16,21 @@ export const MAX_AGENDA_ITEMS = 4;
 const MAX_ENDPOINT_ITEMS = 3;
 /** insight で一度に提示する介入候補の上限（多いと問いが散る） */
 const MAX_CANDIDATE_ITEMS = 2;
+/** quantify で一度に提示する昇格候補の上限（多いと確定の対話が散る） */
+const MAX_KIND_ITEMS = 2;
+/** 名前を列挙する件数の上限（「ほか」で丸める） */
+const MAX_NAMED_ITEMS = 2;
 
 type AgendaInput = {
-  nodes: { id: string; name: string }[];
+  nodes: {
+    id: string;
+    name: string;
+    /** 以下は quantify の項目に使う。省略した呼び出し（旧 fixture）ではその項目が出ないだけ */
+    unit?: string | null;
+    kind?: NodeKind | null;
+    expression?: string | null;
+    initialValue?: number | null;
+  }[];
   edges: {
     /** 最弱リンクの特定に使う。省略した呼び出し（旧 fixture）ではその項目が出ないだけ */
     id?: string;
@@ -25,6 +39,8 @@ type AgendaInput = {
     status?: EdgeStatus;
   }[];
   loops: readonly Loop[];
+  /** 保存済みのシミュレーション設定。未指定なら時間軸の項目を出さない */
+  simConfig?: SimConfigRecord | null;
 };
 
 /** 最弱リンクの優先順（先ほど弱い） */
@@ -165,6 +181,77 @@ function buildInsightItems(
   return items;
 }
 
+/** 名前を最大 2 件並べ、残りは「ほか」で丸める */
+function listNames(names: string[]): string {
+  const shown = names.slice(0, MAX_NAMED_ITEMS).map((n) => `「${n}」`);
+  return `${shown.join("、")}${names.length > MAX_NAMED_ITEMS ? " ほか" : ""}`;
+}
+
+/**
+ * 定量化: 図に数値的な意味を入れ、仮説を数値で試せる形にする。
+ * 昇格候補 → 時間軸 → 初期値 → 式、の順（前ほど後段の前提になる）。
+ * 昇格の提案は決定的なヒューリスティックで、確定するのはユーザー（doc 3 章）
+ */
+function buildQuantifyItems(
+  notes: InterviewNotes,
+  { nodes, edges, loops, simConfig }: AgendaInput,
+): string[] {
+  const items: string[] = [];
+
+  const suggestions = suggestKinds(
+    nodes.map((n) => ({
+      id: n.id,
+      name: n.name,
+      unit: n.unit ?? null,
+      kind: n.kind ?? null,
+    })),
+    edges,
+    loops,
+  ).slice(0, MAX_KIND_ITEMS);
+  if (suggestions.length > 0) {
+    const list = suggestions
+      .map(
+        (s) =>
+          `「${s.name}」は${describeSuggestion(s)}。根拠: ${s.reasons.join(" / ")}`,
+      )
+      .join("　")
+      .trim();
+    items.push(
+      `まだ役割の決まっていない変数がある。昇格候補: ${list}。昇格は提案 → ユーザー確定の順で進める。「時間を止めても残る量ですか、それとも『〜あたり』の速さですか」と一時停止テストで確かめてから、updateDiagram で kind を書く`,
+    );
+  }
+
+  if (simConfig && simConfig.timeUnit === null) {
+    const hint = notes.timeHorizon
+      ? `聞き取りでは「${notes.timeHorizon.unit}」の粒度で語られているので、それを叩き台にする。`
+      : "";
+    items.push(
+      `シミュレーションの時間軸がまだ決まっていない。${hint}「1 ステップを何と見ますか（週 / 月 / 四半期）」「どのくらい先まで見たいですか」をまとめて聞き、dt / steps / 時間単位として保存する`,
+    );
+  }
+
+  const missingInitial = nodes.filter(
+    (n) => n.kind === "stock" && n.initialValue == null,
+  );
+  if (missingInitial.length > 0) {
+    items.push(
+      `初期値の無いストックが ${missingInitial.length} 件ある（${listNames(missingInitial.map((n) => n.name))}）。「いまの水準は、0〜100 で言うとどのくらいですか」と粗い見立てで構わないので聞き、updateDiagram の initialValue に入れる`,
+    );
+  }
+
+  const missingExpression = nodes.filter(
+    (n) =>
+      (n.kind === "flow" || n.kind === "auxiliary") && !n.expression?.trim(),
+  );
+  if (missingExpression.length > 0) {
+    items.push(
+      `式の無いフロー / 補助変数が ${missingExpression.length} 件ある（${listNames(missingExpression.map((n) => n.name))}）。何がその速さ・値を決めているかを聞き、updateDiagram の expression に書く（四則演算・べき乗と min/max/clamp/pow/smooth/delay、変数名は図にあるものだけ）`,
+    );
+  }
+
+  return items;
+}
+
 /**
  * 「次にすること」を優先順で導出する。ドラフト先行なので、AI が叩き台を
  * 描く指示と、その叩き台の「違和感ポイント（=ユーザーに一括で問う所）」を
@@ -173,7 +260,7 @@ function buildInsightItems(
  */
 export function buildInterviewAgenda(
   notes: InterviewNotes,
-  { nodes, edges, loops }: AgendaInput,
+  { nodes, edges, loops, simConfig }: AgendaInput,
   phase: InterviewPhase,
 ): string[] {
   // 焦点: まずテーマと時間挙動を一括で掴む。掴めたら次ターンで描く
@@ -208,6 +295,16 @@ export function buildInterviewAgenda(
       0,
       MAX_AGENDA_ITEMS,
     );
+  }
+
+  // 定量化: 役割・時間軸・初期値・式を入れ、仮説を数値で試せる形にする
+  if (phase === "quantify") {
+    return buildQuantifyItems(notes, {
+      nodes,
+      edges,
+      loops,
+      simConfig,
+    }).slice(0, MAX_AGENDA_ITEMS);
   }
 
   // すり合わせ: ドラフトを実感と突き合わせ、違和感を直す

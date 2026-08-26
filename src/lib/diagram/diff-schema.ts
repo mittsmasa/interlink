@@ -54,10 +54,23 @@ export const diagramDiffSchema = z.object({
     .describe(
       "追加または更新する変数。同名の変数があれば memo/unit を更新する。ストック&フロー化のときは kind と式/初期値/定数値も指定する",
     ),
+  renameNodes: z
+    .array(
+      z.object({
+        from: z.string().min(1).describe("今の変数名"),
+        to: z.string().min(1).describe("新しい変数名"),
+      }),
+    )
+    .default([])
+    .describe(
+      "変数の改名。接続するリンク（極性・根拠・遅れ・確からしさ）と式での参照を保ったまま名前だけ変える。名前を変えたいときは deleteNodes + upsertNodes ではなく必ずこれを使う（削除するとリンクも消える）。改名は diff の中で最初に処理されるので、同じ diff の upsertNodes / upsertEdges / deleteEdges では新しい名前で書く",
+    ),
   deleteNodes: z
     .array(z.string().min(1))
     .default([])
-    .describe("削除する変数の名前。その変数に接続するリンクも一緒に消える"),
+    .describe(
+      "削除する変数の名前。その変数に接続するリンクも一緒に消える。改名したいだけなら renameNodes を使う。名前は改名前のもので指定する",
+    ),
   upsertEdges: z
     .array(
       z.object({

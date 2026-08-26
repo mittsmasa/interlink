@@ -12,6 +12,11 @@ import {
   projects,
 } from "@/db/schema";
 import { normalizeName } from "@/lib/diagram/apply-diff";
+import {
+  mergeSimConfig,
+  parseSimConfig,
+  serializeSimConfig,
+} from "@/lib/diagram/sim-config";
 import { validateExpressionStructure } from "@/lib/diagram/simulate";
 import { renameOwnedProject } from "@/lib/projects/manage";
 import { requireSession } from "@/lib/session";
@@ -43,6 +48,29 @@ export async function updateProjectTitle(projectId: string, title: string) {
   revalidatePath(`/projects/${projectId}`);
   revalidatePath("/");
   return { ok: true as const };
+}
+
+/**
+ * シミュレーション設定（dt / steps / 時間単位）を保存する。
+ * 送ったキーだけ更新し、省略したキーは元のまま。MCP の update_sim_config と同じ経路で、
+ * run_simulation の既定値にもなる。
+ *
+ * 位置情報（updateNodePosition）と違い updatedAt は動かす。表示専用の設定ではなく、
+ * 外部エージェントが読むプロジェクトの内容だから
+ */
+export async function updateSimConfig(
+  projectId: string,
+  patch: { dt?: number; steps?: number; timeUnit?: string | null },
+) {
+  const project = await getOwnedProject(projectId);
+  if (!project) return { ok: false as const };
+  const simConfig = mergeSimConfig(parseSimConfig(project.simConfig), patch);
+  await db
+    .update(projects)
+    .set({ simConfig: serializeSimConfig(simConfig) })
+    .where(eq(projects.id, projectId));
+  revalidatePath(`/projects/${projectId}`);
+  return { ok: true as const, simConfig };
 }
 
 export async function updateNodePosition(

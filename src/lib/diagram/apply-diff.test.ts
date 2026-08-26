@@ -397,6 +397,264 @@ describe("planDiagramMutation", () => {
   });
 });
 
+describe("planDiagramMutation（改名）", () => {
+  /** 式を持つ図。疲労 は auxiliary で 残業時間 を参照している */
+  const sfdDiagram: CurrentDiagram = {
+    nodes: [
+      { id: "n1", name: "残業時間", expression: null },
+      { id: "n2", name: "疲労", expression: "残業時間 * 0.5" },
+    ],
+    edges: [{ id: "e1", sourceNodeId: "n1", targetNodeId: "n2" }],
+  };
+
+  it("改名は name だけの updateNodes になり、エッジ操作を伴わない", () => {
+    const result = planDiagramMutation(
+      diagram,
+      diff({ renameNodes: [{ from: "残業時間", to: "労働時間" }] }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.updateNodes).toEqual([{ id: "n1", name: "労働時間" }]);
+    expect(result.plan.deleteNodeIds).toHaveLength(0);
+    expect(result.plan.createNodes).toHaveLength(0);
+    expect(result.plan.deleteEdgeIds).toHaveLength(0);
+    expect(result.plan.warnings).toHaveLength(0);
+  });
+
+  it("改名後の名前で同一 diff のリンク追加・変数更新が解決される", () => {
+    const result = planDiagramMutation(
+      diagram,
+      diff({
+        renameNodes: [{ from: "残業時間", to: "労働時間" }],
+        upsertNodes: [{ name: "労働時間", memo: "週あたり" }],
+        upsertEdges: [
+          {
+            source: "疲労",
+            target: "労働時間",
+            polarity: "+",
+            rationale: "疲れると効率が落ちて時間が伸びる",
+          },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.updateNodes).toEqual([
+      { id: "n1", memo: "週あたり", unit: undefined, name: "労働時間" },
+    ]);
+    expect(result.plan.createNodes).toHaveLength(0);
+    expect(result.plan.createEdges).toEqual([
+      expect.objectContaining({ sourceName: "疲労", targetName: "労働時間" }),
+    ]);
+    expect(result.plan.warnings).toHaveLength(0);
+  });
+
+  it("改名後の名前で既存リンクを送ると新規作成ではなく更新になる", () => {
+    const result = planDiagramMutation(
+      diagram,
+      diff({
+        renameNodes: [{ from: "残業時間", to: "労働時間" }],
+        upsertEdges: [
+          {
+            source: "労働時間",
+            target: "疲労",
+            polarity: "-",
+            rationale: "見直し",
+          },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.createEdges).toHaveLength(0);
+    expect(result.plan.updateEdges[0]).toMatchObject({ id: "e1" });
+  });
+
+  it("改名元が無ければその改名だけ無視して warning にする", () => {
+    const result = planDiagramMutation(
+      diagram,
+      diff({
+        renameNodes: [
+          { from: "残業", to: "労働時間" },
+          { from: "疲労", to: "疲労感" },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.updateNodes).toEqual([{ id: "n2", name: "疲労感" }]);
+    expect(result.plan.warnings).toEqual([
+      expect.objectContaining({
+        code: "rename-missing",
+        target: "残業→労働時間",
+        suggestion: ["残業時間"],
+      }),
+    ]);
+  });
+
+  it("改名先が既存の変数と正規化一致したら改名しない", () => {
+    const result = planDiagramMutation(
+      diagram,
+      diff({ renameNodes: [{ from: "残業時間", to: " 疲労 " }] }),
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.warnings).toEqual([
+      expect.objectContaining({
+        code: "rename-conflict",
+        target: "残業時間→ 疲労 ",
+      }),
+    ]);
+  });
+
+  it("表記ゆれの直しは自分自身との衝突にしない", () => {
+    const result = planDiagramMutation(
+      diagram,
+      diff({ renameNodes: [{ from: "残業時間", to: "残業時間 " }] }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.updateNodes).toEqual([{ id: "n1", name: "残業時間 " }]);
+  });
+
+  it("同じ diff で消す変数の名前へは衝突扱いせず改名できる", () => {
+    const result = planDiagramMutation(
+      diagram,
+      diff({
+        renameNodes: [{ from: "残業時間", to: "疲労" }],
+        deleteNodes: ["疲労"],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.deleteNodeIds).toEqual(["n2"]);
+    expect(result.plan.updateNodes).toEqual([{ id: "n1", name: "疲労" }]);
+    expect(result.plan.warnings).toHaveLength(0);
+  });
+
+  it("削除が無視される名前へは改名させない（同名が 2 つ残らない）", () => {
+    const result = planDiagramMutation(
+      diagram,
+      diff({
+        renameNodes: [{ from: "残業時間", to: "疲労" }],
+        deleteNodes: ["疲労"],
+        upsertNodes: [{ name: "疲労", memo: "残す" }],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.deleteNodeIds).toHaveLength(0);
+    expect(result.plan.updateNodes).toEqual([
+      { id: "n2", memo: "残す", unit: undefined },
+    ]);
+    expect(result.plan.warnings.map((w) => w.code)).toEqual([
+      "rename-conflict",
+      "delete-conflict",
+    ]);
+  });
+
+  it("改名した変数を同じ diff で削除する指定は無視する", () => {
+    const result = planDiagramMutation(
+      diagram,
+      diff({
+        renameNodes: [{ from: "残業時間", to: "労働時間" }],
+        deleteNodes: ["残業時間"],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.deleteNodeIds).toHaveLength(0);
+    expect(result.plan.warnings).toEqual([
+      expect.objectContaining({ code: "delete-conflict", target: "残業時間" }),
+    ]);
+  });
+
+  it("他の変数の式にある参照も新しい名前へ置き換える", () => {
+    const result = planDiagramMutation(
+      sfdDiagram,
+      diff({ renameNodes: [{ from: "残業時間", to: "労働時間" }] }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.updateNodes).toEqual([
+      { id: "n1", name: "労働時間" },
+      { id: "n2", expression: "労働時間 * 0.5" },
+    ]);
+    expect(result.plan.warnings).toHaveLength(0);
+  });
+
+  it("連鎖する改名でも式の参照は最後の名前まで追いつく", () => {
+    const result = planDiagramMutation(
+      sfdDiagram,
+      diff({
+        renameNodes: [
+          { from: "残業時間", to: "労働時間" },
+          { from: "労働時間", to: "稼働時間" },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.updateNodes).toEqual([
+      { id: "n1", name: "稼働時間" },
+      { id: "n2", expression: "稼働時間 * 0.5" },
+    ]);
+  });
+
+  it("同じ diff で式を送り直したら改名の追従では上書きしない", () => {
+    const result = planDiagramMutation(
+      sfdDiagram,
+      diff({
+        renameNodes: [{ from: "残業時間", to: "労働時間" }],
+        upsertNodes: [
+          { name: "疲労", kind: "auxiliary", expression: "労働時間 * 0.8" },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.updateNodes.find((n) => n.id === "n2")).toMatchObject({
+      expression: "労働時間 * 0.8",
+    });
+  });
+
+  it("式で参照できない名前への改名では式を書き換えず warning にする", () => {
+    const result = planDiagramMutation(
+      sfdDiagram,
+      diff({ renameNodes: [{ from: "残業時間", to: "労働 時間" }] }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.updateNodes).toEqual([{ id: "n1", name: "労働 時間" }]);
+    expect(result.plan.warnings).toEqual([
+      expect.objectContaining({ code: "rename-expression", target: "疲労" }),
+    ]);
+  });
+
+  it("式が無効なら改名を反映せず warning にする", () => {
+    const result = planDiagramMutation(
+      {
+        ...sfdDiagram,
+        nodes: [
+          { id: "n1", name: "残業時間", expression: null },
+          { id: "n2", name: "疲労", expression: "sqrt(残業時間)" },
+        ],
+      },
+      diff({ renameNodes: [{ from: "残業時間", to: "労働時間" }] }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.updateNodes).toEqual([{ id: "n1", name: "労働時間" }]);
+    expect(result.plan.warnings).toEqual([
+      expect.objectContaining({
+        code: "rename-expression",
+        target: "疲労",
+        message: expect.stringContaining("式が無効"),
+      }),
+    ]);
+  });
+});
+
 describe("planDiagramMutation（SFD 化）", () => {
   it("新規ノードに kind:stock と initialValue を付けると createNodes に載る", () => {
     const result = planDiagramMutation(

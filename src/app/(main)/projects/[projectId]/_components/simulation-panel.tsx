@@ -7,13 +7,15 @@ import {
   PlayIcon,
   XIcon,
 } from "@phosphor-icons/react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import type { SimConfigRecord } from "@/lib/diagram/sim-config";
 import { type SimResult, simulate } from "@/lib/diagram/simulate";
 import type { Diagram } from "@/lib/queries/diagrams";
 import { cn } from "@/lib/utils";
+import { updateSimConfig } from "../_actions";
 import { LARGE_DIMS, SimChart } from "./sim-chart";
 import {
   canSimulate,
@@ -25,7 +27,10 @@ import {
 } from "./sim-inputs";
 
 type SimulationPanelProps = {
+  projectId: string;
   diagram: Diagram;
+  /** 保存済みの設定。入力欄の初期値になり、変更はここへ書き戻す */
+  simConfig: SimConfigRecord;
   open: boolean;
   onToggle: () => void;
 };
@@ -34,18 +39,26 @@ type SimulationPanelProps = {
  * シミュレーション実行 + 時系列グラフのフローティングパネル。キャンバス左下に折りたたみで置く
  * （構造パネルは左上、inspector は右上）。simulate はクライアントで呼ぶ純粋関数で、結果は保存
  * しない（ループ/lint と同思想）。
+ *
+ * ただし dt / steps / 時間単位は「この問いをどの時間軸で眺めるか」という決め事なので
+ * プロジェクトに保存する（MCP の run_simulation もこの値を既定値として読む）。
+ * 遅れステップ数は実行ごとの試行なので保存しない。
  */
 export function SimulationPanel({
+  projectId,
   diagram,
+  simConfig,
   open,
   onToggle,
 }: SimulationPanelProps) {
-  const [dt, setDt] = useState("1");
-  const [steps, setSteps] = useState("20");
+  const [dt, setDt] = useState(String(simConfig.dt));
+  const [steps, setSteps] = useState(String(simConfig.steps));
+  const [timeUnit, setTimeUnit] = useState(simConfig.timeUnit ?? "");
   const [delaySteps, setDelaySteps] = useState("1");
   const [result, setResult] = useState<SimResult | null>(null);
   const [mode, setMode] = useState<SeriesMode>("all");
   const [expanded, setExpanded] = useState(false);
+  const [, startTransition] = useTransition();
 
   const { simNodes, simEdges, runnable, delayed } = useMemo(() => {
     const simNodes = toSimNodes(diagram.nodes);
@@ -79,7 +92,34 @@ export function SimulationPanel({
     };
   }, [expanded]);
 
+  /**
+   * 入力を設定として保存する。入力途中の 1 文字ごとには書かず、欄を離れたときと
+   * 実行時だけ呼ぶ。数値として読めない値は送らない（保存側でも既定へ倒れるが、
+   * 入力中の中途半端な値で上書きしないため）
+   */
+  const persist = () => {
+    const patch: { dt?: number; steps?: number; timeUnit?: string | null } = {
+      timeUnit: timeUnit.trim() === "" ? null : timeUnit,
+    };
+    const dtValue = Number(dt);
+    if (dt.trim() !== "" && Number.isFinite(dtValue) && dtValue > 0) {
+      patch.dt = dtValue;
+    }
+    const stepsValue = Number(steps);
+    if (
+      steps.trim() !== "" &&
+      Number.isInteger(stepsValue) &&
+      stepsValue >= 1
+    ) {
+      patch.steps = stepsValue;
+    }
+    startTransition(async () => {
+      await updateSimConfig(projectId, patch);
+    });
+  };
+
   const run = () => {
+    persist();
     // 数値変換は simulate 側の config 検証に委ねる（空欄→0, 不正→NaN はそこで
     // invalid-config として人間可読メッセージになる）
     setResult(
@@ -116,7 +156,7 @@ export function SimulationPanel({
 
       {open && (
         <div className="ink-in mb-2 space-y-3 rounded-lg border bg-card/95 p-4 shadow-md backdrop-blur-sm">
-          <div className="flex items-end gap-2">
+          <div className="flex flex-wrap items-end gap-2">
             <div className="space-y-1">
               <Label htmlFor="sim-dt" className="text-muted-foreground text-xs">
                 dt
@@ -127,6 +167,7 @@ export function SimulationPanel({
                 step="0.1"
                 value={dt}
                 onChange={(e) => setDt(e.target.value)}
+                onBlur={persist}
                 className="h-8 w-14"
               />
             </div>
@@ -143,7 +184,24 @@ export function SimulationPanel({
                 step="1"
                 value={steps}
                 onChange={(e) => setSteps(e.target.value)}
+                onBlur={persist}
                 className="h-8 w-16"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label
+                htmlFor="sim-unit"
+                className="text-muted-foreground text-xs"
+              >
+                単位
+              </Label>
+              <Input
+                id="sim-unit"
+                value={timeUnit}
+                onChange={(e) => setTimeUnit(e.target.value)}
+                onBlur={persist}
+                placeholder="週"
+                className="h-8 w-14"
               />
             </div>
             {/* 遅れ付きリンクがある図でだけ出す（無い図では効かない設定のため） */}

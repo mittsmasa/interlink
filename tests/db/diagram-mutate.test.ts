@@ -109,6 +109,54 @@ describe("applyMutationPlan", () => {
     expect(snapshot.edges).toHaveLength(0);
   });
 
+  it("改名しても接続エッジと式の参照が保たれる", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+
+    await applyDiff(project.id, {
+      upsertNodes: [
+        { name: "コスト増大", kind: "constant", value: 10 },
+        { name: "利益", kind: "auxiliary", expression: "売上 - コスト増大" },
+        { name: "売上", kind: "constant", value: 30 },
+      ],
+      upsertEdges: [
+        {
+          source: "コスト増大",
+          target: "利益",
+          polarity: "-",
+          hasDelay: true,
+          rationale: "コストが増えると利益が減ると本人が語った",
+          status: "confirmed",
+        },
+      ],
+    });
+
+    await applyDiff(project.id, {
+      renameNodes: [{ from: "コスト増大", to: "コスト" }],
+    });
+
+    const snapshot = await loadDiagramSnapshot(project.id);
+    expect(snapshot.nodes.map((n) => n.name).sort()).toEqual([
+      "コスト",
+      "利益",
+      "売上",
+    ]);
+    // 削除+作り直しなら消えていたリンクの属性がそのまま残る
+    expect(snapshot.edges).toHaveLength(1);
+    expect(snapshot.edges[0]).toMatchObject({
+      sourceName: "コスト",
+      targetName: "利益",
+      polarity: "-",
+      hasDelay: true,
+      status: "confirmed",
+      rationale: "コストが増えると利益が減ると本人が語った",
+    });
+    // 式の中の参照も新しい名前に追従する（実行時 undefined-reference にならない）
+    expect(snapshot.nodes.find((n) => n.name === "利益")?.expression).toBe(
+      "売上 - コスト",
+    );
+  });
+
   it("status は省略時 inferred で保存され、指定時のみ更新される", async () => {
     const user = await createUser();
     const project = await createProject(user.id);

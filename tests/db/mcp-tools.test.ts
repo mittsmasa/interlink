@@ -25,7 +25,7 @@ function textOf(result: Awaited<ReturnType<Client["callTool"]>>) {
 }
 
 describe("MCP tools", () => {
-  it("tools/list で 10 ツールが列挙される", async () => {
+  it("tools/list で 11 ツールが列挙される", async () => {
     const user = await createUser();
     const client = await connectClient(user.id);
     const { tools } = await client.listTools();
@@ -40,6 +40,7 @@ describe("MCP tools", () => {
       "update_diagram",
       "update_notes",
       "update_project",
+      "update_sim_config",
     ]);
     // diff スキーマが JSON Schema へ変換されて公開されていること（zod 4 互換の確認）
     const update = tools.find((t) => t.name === "update_diagram");
@@ -1397,5 +1398,245 @@ describe("MCP simulation tools", () => {
     const text = (result.messages[0].content as { text: string }).text;
     expect(text).not.toContain("画面左下");
     expect(text).toContain("run_simulation");
+  });
+
+  describe("simConfig の永続化", () => {
+    type ConfigPayload = {
+      ok: boolean;
+      simConfig?: { dt: number; steps: number; timeUnit: string | null };
+      updatedAt?: number;
+      error?: string;
+    };
+
+    async function saveConfig(
+      client: Client,
+      args: Record<string, unknown>,
+    ): Promise<ConfigPayload> {
+      const result = await client.callTool({
+        name: "update_sim_config",
+        arguments: args,
+      });
+      expect(result.isError).toBeFalsy();
+      return JSON.parse(textOf(result)) as ConfigPayload;
+    }
+
+    it("保存した設定を読み直せる（ラウンドトリップ）", async () => {
+      const user = await createUser();
+      const project = await createProject(user.id);
+      const client = await connectClient(user.id);
+
+      const saved = await saveConfig(client, {
+        projectId: project.id,
+        dt: 0.5,
+        steps: 52,
+        timeUnit: "週",
+      });
+      expect(saved.simConfig).toEqual({ dt: 0.5, steps: 52, timeUnit: "週" });
+
+      const read = await client.callTool({
+        name: "get_diagram",
+        arguments: { projectId: project.id },
+      });
+      const payload = JSON.parse(textOf(read)) as ConfigPayload;
+      expect(payload.simConfig).toEqual({ dt: 0.5, steps: 52, timeUnit: "週" });
+    });
+
+    it("送ったキーだけ更新し、省略したキーは元のまま", async () => {
+      const user = await createUser();
+      const project = await createProject(user.id);
+      const client = await connectClient(user.id);
+      await saveConfig(client, {
+        projectId: project.id,
+        dt: 0.5,
+        steps: 52,
+        timeUnit: "週",
+      });
+
+      const updated = await saveConfig(client, {
+        projectId: project.id,
+        steps: 10,
+      });
+      expect(updated.simConfig).toEqual({ dt: 0.5, steps: 10, timeUnit: "週" });
+    });
+
+    it("timeUnit に null を送れば未設定へ戻せる", async () => {
+      const user = await createUser();
+      const project = await createProject(user.id);
+      const client = await connectClient(user.id);
+      await saveConfig(client, { projectId: project.id, timeUnit: "週" });
+
+      const cleared = await saveConfig(client, {
+        projectId: project.id,
+        timeUnit: null,
+      });
+      expect(cleared.simConfig?.timeUnit).toBeNull();
+    });
+
+    it("未設定なら get_diagram は既定値（dt=1 / steps=20）を返す", async () => {
+      const user = await createUser();
+      const project = await createProject(user.id);
+      const client = await connectClient(user.id);
+      const read = await client.callTool({
+        name: "get_diagram",
+        arguments: { projectId: project.id },
+      });
+      const payload = JSON.parse(textOf(read)) as ConfigPayload;
+      expect(payload.simConfig).toEqual({ dt: 1, steps: 20, timeUnit: null });
+    });
+
+    it("他人のプロジェクトには書けない", async () => {
+      const owner = await createUser();
+      const attacker = await createUser();
+      const project = await createProject(owner.id);
+      const client = await connectClient(attacker.id);
+      const result = await client.callTool({
+        name: "update_sim_config",
+        arguments: { projectId: project.id, dt: 2 },
+      });
+      expect(result.isError).toBe(true);
+    });
+
+    it("expectedUpdatedAt が古ければ conflict を返す", async () => {
+      const user = await createUser();
+      const project = await createProject(user.id);
+      const client = await connectClient(user.id);
+      const stale = await client.callTool({
+        name: "update_sim_config",
+        arguments: {
+          projectId: project.id,
+          dt: 2,
+          expectedUpdatedAt: project.updatedAt - 1000,
+        },
+      });
+      const payload = JSON.parse(textOf(stale)) as ConfigPayload;
+      expect(payload.ok).toBe(false);
+      expect(payload.error).toBe("conflict");
+    });
+
+    it("run_simulation / compare_scenarios は引数省略時に保存値を使う", async () => {
+      const user = await createUser();
+      const project = await createProject(user.id);
+      const client = await connectClient(user.id);
+      await createFatigueModel(client, project.id);
+      await saveConfig(client, {
+        projectId: project.id,
+        dt: 0.5,
+        steps: 8,
+        timeUnit: "週",
+      });
+
+      const run = await client.callTool({
+        name: "run_simulation",
+        arguments: { projectId: project.id },
+      });
+      const runPayload = JSON.parse(textOf(run)) as RunPayload & {
+        timeUnit?: string | null;
+      };
+      expect(runPayload.dt).toBe(0.5);
+      expect(runPayload.steps).toBe(8);
+      expect(runPayload.timeUnit).toBe("週");
+
+      const compare = await client.callTool({
+        name: "compare_scenarios",
+        arguments: {
+          projectId: project.id,
+          scenarios: [{ label: "疲労半分", overrides: { 疲労: 15 } }],
+        },
+      });
+      const comparePayload = JSON.parse(textOf(compare)) as {
+        dt: number;
+        steps: number;
+        timeUnit: string | null;
+      };
+      expect(comparePayload.dt).toBe(0.5);
+      expect(comparePayload.steps).toBe(8);
+      expect(comparePayload.timeUnit).toBe("週");
+    });
+
+    it("引数を渡せば保存値より引数が優先される", async () => {
+      const user = await createUser();
+      const project = await createProject(user.id);
+      const client = await connectClient(user.id);
+      await createFatigueModel(client, project.id);
+      await saveConfig(client, { projectId: project.id, dt: 0.5, steps: 8 });
+
+      const run = await client.callTool({
+        name: "run_simulation",
+        arguments: { projectId: project.id, steps: 30 },
+      });
+      const payload = JSON.parse(textOf(run)) as RunPayload;
+      expect(payload.dt).toBe(0.5);
+      expect(payload.steps).toBe(30);
+    });
+  });
+
+  describe("sfdHints（昇格候補）", () => {
+    type HintsPayload = {
+      sfdHints: {
+        total: number;
+        shown: number;
+        suggestions: {
+          name: string;
+          suggestedKind: string;
+          confidence: string;
+          reasons: string[];
+        }[];
+      } | null;
+    };
+
+    async function readHints(client: Client, projectId: string) {
+      const result = await client.callTool({
+        name: "get_diagram",
+        arguments: { projectId },
+      });
+      return (JSON.parse(textOf(result)) as HintsPayload).sfdHints;
+    }
+
+    it("未分類の変数があれば根拠付きの候補を返す", async () => {
+      const user = await createUser();
+      const project = await createProject(user.id);
+      const client = await connectClient(user.id);
+      await client.callTool({
+        name: "update_diagram",
+        arguments: {
+          projectId: project.id,
+          diff: {
+            upsertNodes: [{ name: "疲労" }, { name: "ミス率" }],
+            upsertEdges: [
+              {
+                source: "疲労",
+                target: "ミス率",
+                polarity: "+",
+                rationale: "疲れるとミスが増える",
+              },
+            ],
+          },
+        },
+      });
+
+      const hints = await readHints(client, project.id);
+      expect(hints?.total).toBe(2);
+      const fatigue = hints?.suggestions.find((s) => s.name === "疲労");
+      expect(fatigue?.suggestedKind).toBe("stock");
+      expect(fatigue?.reasons.length).toBeGreaterThanOrEqual(1);
+      const missRate = hints?.suggestions.find((s) => s.name === "ミス率");
+      expect(missRate?.suggestedKind).toBe("auxiliary");
+    });
+
+    it("すべて昇格済みの図では出さない", async () => {
+      const user = await createUser();
+      const project = await createProject(user.id);
+      const client = await connectClient(user.id);
+      await createFatigueModel(client, project.id);
+
+      expect(await readHints(client, project.id)).toBeNull();
+    });
+
+    it("変数の無い図でも落ちない", async () => {
+      const user = await createUser();
+      const project = await createProject(user.id);
+      const client = await connectClient(user.id);
+      expect(await readHints(client, project.id)).toBeNull();
+    });
   });
 });

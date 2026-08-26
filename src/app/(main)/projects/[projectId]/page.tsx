@@ -3,6 +3,7 @@ import { AppHeader } from "@/components/app-header";
 import { toUIMessage } from "@/lib/chat-store";
 import { renderDiagramExport } from "@/lib/diagram/export";
 import { detectLoops } from "@/lib/diagram/loops";
+import { parseSimConfig } from "@/lib/diagram/sim-config";
 import { parseInterviewNotes } from "@/lib/interview/notes";
 import { deriveInterviewPhase } from "@/lib/interview/phase";
 import { getDiagramByProjectId } from "@/lib/queries/diagrams";
@@ -57,6 +58,7 @@ export default async function ProjectPage({
         diagram={diagram}
         notes={notes}
         phase={phase}
+        simConfig={parseSimConfig(project.simConfig)}
       />
     </div>
   );
