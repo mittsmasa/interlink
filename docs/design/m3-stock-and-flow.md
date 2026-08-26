@@ -1,6 +1,6 @@
 # M3: ストック&フロー + シミュレーション 設計ノート
 
-ステータス: 実装済み（schema 拡張 / kind 昇格 / 式検証 / simulate / グラフ / MCP ツール / 遅れ）。本ノートは背景の考え方と、実装で確定した挙動の両方を記す。確定 DDL・関数シグネチャはコードを正とし、ここでは「なぜそうなっているか」を残す。
+ステータス: 実装済み（schema 拡張 / kind 昇格 / 式検証 / simulate / グラフ / MCP ツール / 遅れ / 昇格候補の提案 / 設定の永続化）。本ノートは背景の考え方と、実装で確定した挙動の両方を記す。確定 DDL・関数シグネチャはコードを正とし、ここでは「なぜそうなっているか」を残す。
 読者: M3 を触る人。前提知識（システムダイナミクス）は本ノートで補う。
 
 実装の対応表:
@@ -11,11 +11,15 @@
 | diff の kind 別正規化と式の保存時検証 | [`src/lib/diagram/apply-diff.ts`](../../src/lib/diagram/apply-diff.ts) `normalizeSfdFields` |
 | 式からの情報リンク導出（依存 / 極性） | [`src/lib/diagram/dependencies.ts`](../../src/lib/diagram/dependencies.ts) / [`dependency-polarity.ts`](../../src/lib/diagram/dependency-polarity.ts) |
 | SFD 整合 lint | [`src/lib/diagram/lint.ts`](../../src/lib/diagram/lint.ts) `lintStockFlow` |
+| 単位の整合 lint（unit パーサ） | [`lint.ts`](../../src/lib/diagram/lint.ts) `lintUnits` / [`units.ts`](../../src/lib/diagram/units.ts) |
 | シミュレーションエンジン | [`src/lib/diagram/simulate.ts`](../../src/lib/diagram/simulate.ts) |
 | 遅れ（hasDelay × delaySteps / smooth / delay） | [`simulate.ts`](../../src/lib/diagram/simulate.ts) `DELAY_NOTE` |
 | 図 → simulate 入力の変換 | [`src/lib/diagram/sim-inputs.ts`](../../src/lib/diagram/sim-inputs.ts) |
 | 結果の要約（BOT 語彙） | [`src/lib/diagram/sim-summary.ts`](../../src/lib/diagram/sim-summary.ts) |
-| MCP ツール `run_simulation` / `compare_scenarios` | [`src/lib/mcp/tools.ts`](../../src/lib/mcp/tools.ts) |
+| kind 昇格候補のヒューリスティック | [`src/lib/diagram/suggest-kinds.ts`](../../src/lib/diagram/suggest-kinds.ts) |
+| シミュレーション設定の永続化（dt / steps / timeUnit） | [`src/lib/diagram/sim-config.ts`](../../src/lib/diagram/sim-config.ts) |
+| 聞き取りの定量化フェーズ | [`src/lib/interview/phase.ts`](../../src/lib/interview/phase.ts) `quantify` / [`agenda.ts`](../../src/lib/interview/agenda.ts) |
+| MCP ツール `run_simulation` / `compare_scenarios` / `update_sim_config` | [`src/lib/mcp/tools.ts`](../../src/lib/mcp/tools.ts) |
 | UI（シミュレーションパネル / グラフ） | `src/app/(main)/projects/[projectId]/_components/simulation-panel.tsx` |
 
 ---
@@ -60,6 +64,16 @@ CLD と SFD を別グラフとして二重管理しない。同一ノードの `
 
 昇格は機械的に一意には決まらない。同じ「残業時間」でも、文脈で kind が変わる（4 章参照）。よって昇格は対話的に行う。AI が kind を提案し、ユーザーが確定する。M2 の「AI が図を提案 → ユーザーが直す」流れの延長で実装する。
 
+### 提案の出どころ（実装で確定）
+
+提案の材料は `suggestKinds`（[`suggest-kinds.ts`](../../src/lib/diagram/suggest-kinds.ts)）が決定的に導出する。4 章の「補助のものさし」を優先順位付きのルールに落とし、未分類ノードごとに `{ suggestedKind, confidence（高 / 中 / 低）, reasons（日本語） }` を返す。保存せず毎回導出する（ループ・lint と同じ）。
+
+- 外部エージェントには `get_diagram` の `sfdHints` として届く
+- アプリでは変数を選んだときに inspector へ「提案: ストック（確からしさ 中）」と根拠が出て、1 クリックで確定できる
+- **どちらも自動適用しない**。確定はユーザーの操作か、ユーザーの合意を得た AI の `update_diagram`
+
+聞き取りの側では、昇格が始まって定量化が途中の状態を `quantify` フェーズとして導出し（[`phase.ts`](../../src/lib/interview/phase.ts)）、残った未分類・初期値・式・時間軸をアジェンダで順に問う。数値が揃えば `insight` へ戻り、仮説を `overrides` で試す段になる。
+
 ---
 
 ## 4. ストックとフローの見分け方
@@ -84,7 +98,7 @@ CLD と SFD を別グラフとして二重管理しない。同一ノードの `
 
 この曖昧さがあるため、昇格は AI 提案 + ユーザー確定の対話で決める（3 章）。
 
-補足（実装上の注意）: 上の「単位」のものさしは人が判断するためのもので、コードは `unit` 列を stock/flow の判別に使っていない（`src/lib/diagram` に `unit` を読む箇所は無い）。単位の整合チェックは未実装（8 章 Open Questions）。
+補足（実装上の注意）: 判定の主軸である一時停止テストは人の判断で、コードにはできない。上の補助のものさし 3 つは `suggestKinds` がルール化していて、kind を**提案**するために `unit` を読む（「〜/週」のように分母が時間なら flow、時点の量なら stock）。決まった kind が正しいかを**後から確かめる**側でも `unit` を読む: flow → stock の単位が「ストックの単位 / 時間」になっているかを lint が見る（`unit-mismatch-flow`。7 章の表）。どちらも単位表記は自由文字列なので、読めない表記は黙って見送る（`src/lib/diagram/units.ts`）。
 
 ### 疲労の問いを例にした分類
 
@@ -270,6 +284,11 @@ simulate が使うエッジは **flow → stock** だけ（極性 + = 流入 / �
 | `stock-without-flow` | stock に流入/流出する flow が無い（初期値のまま動かない） |
 | `stock-to-stock-edge` | stock 同士のリンク（量は flow を通してしか動かない） |
 | `undefined-reference` | 式が図に無い名前を参照（実行時エラーになる） |
+| `unit-mismatch-flow` | flow の単位が「ストックの単位 / 時間」の率になっていない（`lintUnits`） |
+
+上 4 つは「実行すると黙って無視される・エラーになる」構造の問題だが、`unit-mismatch-flow` だけは毛色が違う。**計算は最後まで通り、数値も出る。壊れるのは数字の意味だけ**（4 章の「1 日あたりの残業時間」と「累積残業時間」の取り違え）。実行前に気づく手立てが単位しか無いため、`run_simulation` の warnings にも他の SFD lint と並べて載せる。
+
+単位は自由文字列なので、判定は確実に言えるときだけに絞る。`src/lib/diagram/units.ts` が「時間/日」「人/月」のスラッシュ区切りと「時間」「人」の時点量だけを読み、それ以外（分母が時間単位でない「円/人」、区切りが 2 つ以上、空）は null を返して黙って見送る。stock 自身の単位が率のとき（平滑化した成長率「%/年」など）も、フローが「%/年/年」になり比べようがないので判定しない。単位が無くて確かめられない stock / flow には `unit-missing-on-sfd`（info）で単位を促す。
 
 ### 設定と安全装置（実装で確定）
 
@@ -280,7 +299,13 @@ simulate が使うエッジは **flow → stock** だけ（極性 + = 流入 / �
 - `delaySteps`: `hasDelay` 付きリンクを何ステップ遅らせるか（既定 1、1 以上の整数）。「遅れ」節を参照
 - 発散ガード: stock が非有限（Infinity / NaN）になったら `{ type: "diverged", nodeId, step }` で打ち切る。dt 過大や正帰還の暴走に気づかせるため
 
-`dt` / `steps` は永続化せず、UI は useState、MCP は引数（既定 dt=1 / steps=20）で持つ。
+`dt` / `steps` は **プロジェクトに永続化する**（`projects.sim_config` の JSON。`{ dt, steps, timeUnit }`）。当初は「永続化せず UI は useState、MCP は引数」としていたが、同じ問いを見るたびに時間軸を決め直すのは無駄で、外部エージェントと UI で設定がずれる原因にもなるため 8 章 Open Questions を実装した。
+
+- 読み書きは [`sim-config.ts`](../../src/lib/diagram/sim-config.ts)。壊れた JSON や範囲外の値は既定（dt=1 / steps=20）へ倒す
+- 優先順は **引数 → 保存値 → 既定値**。`run_simulation` / `compare_scenarios` で `dt` / `steps` を渡せば 1 回限りその値で回る
+- `timeUnit` は「1 ステップが何を表すか」（週 / 月 …）の表示用ラベルで、計算には使わない。聞き取りノートの `timeHorizon.unit`（ユーザーが問題を語るときの時間粒度）とは別物で、多くの場合それを叩き台に決まる
+- 書き込みは MCP の `update_sim_config` と、アプリのシミュレーションパネル（入力欄を離れたときと実行時に保存）
+- `delaySteps` は**永続化しない**。こちらは実行ごとの試行なので引数・入力欄のまま
 
 ### 遅れ（`hasDelay` / `smooth` / `delay`）
 
@@ -326,17 +351,20 @@ CLD では「効くまでに時間がかかる」リンクに遅れマークを�
 5. グラフ描画（クライアントでインタラクティブに再計算）— 済（SVG 自前描画。ライブラリは使っていない）
 6. MCP から回す（`run_simulation` / `compare_scenarios`、要約、SFD lint、関数ホワイトリスト）— 済
 7. 遅れの反映（`hasDelay` × `delaySteps` のパイプライン遅延、式の `smooth` / `delay`）— 済
+8. 昇格の支援（`suggestKinds` / `sfdHints` / inspector の提案）と設定の永続化（`sim_config`）、聞き取りの `quantify` フェーズ — 済
 
 ### 決まったこと
 
-- `dt` / `steps` は永続化しない（UI は一時設定、MCP は引数）
+- `dt` / `steps` / `timeUnit` はプロジェクトに永続化する（`projects.sim_config`）。`delaySteps` と `overrides` は実行ごとの引数のまま
 - 初期値の上書き・シナリオ比較は `overrides` として**実行時の引数**で受け、保存しない
 - 遅れは 2 段構え。CLD の `hasDelay` は実行時の `delaySteps` で一律に効かせ、リンクごとの時定数が要るときは式の `smooth` / `delay` を使う。リンクごとの遅れ量は列として持たない
+- kind の昇格候補は決定的なヒューリスティックで出し、確定は必ず人が行う（3 章）
 
 ### Open Questions（未決）
 
-- `dt` / `steps` / シナリオの永続化（今は毎回渡す）
-- 単位の整合チェックをどこまでやるか（`unit` 列はまだどのロジックも読まない）
+- シナリオ（`overrides` の組み合わせ）の永続化。dt / steps は永続化したが、シナリオは名前付きで保存する器が要るので別途
+- 単位の整合チェックをどこまで広げるか（flow → stock が率かどうかは `unit-mismatch-flow` で見るようになった。式の中の単位（`残高 * 利率` の次元）と、`simConfig.timeUnit` と flow の分母の突き合わせは未着手）
+- 昇格ヒューリスティックの語彙をどう育てるか（今は小さな辞書。誤検知が続く語を運用しながら足し引きする）
 - 式エディタの UX（補完、ノード名参照の入力支援）
 - 数値積分の精度（オイラー法のまま。RK4 が要るかは実例待ち）
 

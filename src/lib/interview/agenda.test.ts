@@ -317,4 +317,156 @@ describe("buildInterviewAgenda", () => {
       expect(agenda.length).toBeLessThanOrEqual(MAX_AGENDA_ITEMS);
     });
   });
+
+  describe("quantify フェーズ", () => {
+    const defaultSim = { dt: 1, steps: 20, timeUnit: null };
+
+    it("未分類の変数があれば、根拠付きの昇格候補を提案する", () => {
+      const diagram = {
+        nodes: [
+          { id: "a", name: "疲労" },
+          { id: "b", name: "ミス率" },
+        ],
+        edges: [
+          { sourceNodeId: "a", targetNodeId: "b" },
+          { sourceNodeId: "b", targetNodeId: "a" },
+        ],
+        loops: [makeLoop({})],
+      };
+      const agenda = buildInterviewAgenda(
+        emptyInterviewNotes(),
+        diagram,
+        "quantify",
+      );
+      const promote = agenda.find((i) => i.includes("昇格候補"));
+      expect(promote).toContain("「疲労」はストック");
+      expect(promote).toContain("根拠:");
+      expect(promote).toContain("一時停止テスト");
+      // 確定するのはユーザー（doc 3 章）
+      expect(promote).toContain("ユーザー確定");
+    });
+
+    it("時間単位が未設定なら、dt と期間の問いを出す", () => {
+      const diagram = {
+        nodes: [
+          { id: "a", name: "疲労", kind: "stock" as const, initialValue: 30 },
+        ],
+        edges: [],
+        loops: [],
+        simConfig: defaultSim,
+      };
+      const agenda = buildInterviewAgenda(
+        emptyInterviewNotes(),
+        diagram,
+        "quantify",
+      );
+      const axis = agenda.find((i) => i.includes("時間軸"));
+      expect(axis).toContain("1 ステップを何と見ますか");
+      expect(axis).toContain("どのくらい先まで");
+    });
+
+    it("聞き取り済みの時間粒度があれば叩き台として添える", () => {
+      const notes = notesWith({
+        timeHorizon: { from: "半年前", to: "現在", unit: "週" },
+      });
+      const agenda = buildInterviewAgenda(
+        notes,
+        { nodes: [], edges: [], loops: [], simConfig: defaultSim },
+        "quantify",
+      );
+      expect(agenda.find((i) => i.includes("時間軸"))).toContain(
+        "「週」の粒度",
+      );
+    });
+
+    it("時間単位が決まっていれば時間軸の項目を出さない", () => {
+      const agenda = buildInterviewAgenda(
+        emptyInterviewNotes(),
+        {
+          nodes: [],
+          edges: [],
+          loops: [],
+          simConfig: { dt: 1, steps: 20, timeUnit: "週" },
+        },
+        "quantify",
+      );
+      expect(agenda.some((i) => i.includes("時間軸"))).toBe(false);
+    });
+
+    it("simConfig を渡さない呼び出し（旧 fixture）では時間軸を問わない", () => {
+      const agenda = buildInterviewAgenda(
+        emptyInterviewNotes(),
+        { nodes: [], edges: [], loops: [] },
+        "quantify",
+      );
+      expect(agenda.some((i) => i.includes("時間軸"))).toBe(false);
+    });
+
+    it("初期値の無いストックと式の無いフローを名指しで促す", () => {
+      const diagram = {
+        nodes: [
+          { id: "a", name: "疲労", kind: "stock" as const, initialValue: null },
+          { id: "b", name: "残業増", kind: "flow" as const, expression: null },
+          {
+            id: "c",
+            name: "ミス率",
+            kind: "auxiliary" as const,
+            expression: "疲労/100",
+          },
+        ],
+        edges: [],
+        loops: [],
+        simConfig: { dt: 1, steps: 20, timeUnit: "週" },
+      };
+      const agenda = buildInterviewAgenda(
+        emptyInterviewNotes(),
+        diagram,
+        "quantify",
+      );
+      const initial = agenda.find((i) => i.includes("初期値の無いストック"));
+      expect(initial).toContain("「疲労」");
+      expect(initial).toContain("initialValue");
+      const expr = agenda.find((i) => i.includes("式の無いフロー"));
+      expect(expr).toContain("「残業増」");
+      // 式のある補助変数は挙げない
+      expect(expr).not.toContain("ミス率");
+    });
+
+    it("すべて埋まっていれば促す項目が無くなる", () => {
+      const agenda = buildInterviewAgenda(
+        emptyInterviewNotes(),
+        {
+          nodes: [
+            { id: "a", name: "疲労", kind: "stock" as const, initialValue: 30 },
+            { id: "b", name: "残業増", kind: "flow" as const, expression: "8" },
+          ],
+          edges: [],
+          loops: [],
+          simConfig: { dt: 1, steps: 20, timeUnit: "週" },
+        },
+        "quantify",
+      );
+      expect(agenda).toEqual([]);
+    });
+
+    it("項目数は上限を超えない", () => {
+      const diagram = {
+        nodes: [
+          { id: "a", name: "疲労" },
+          { id: "b", name: "ミス率" },
+          { id: "c", name: "余力", kind: "stock" as const, initialValue: null },
+          { id: "d", name: "回復", kind: "flow" as const, expression: null },
+        ],
+        edges: [{ sourceNodeId: "a", targetNodeId: "b" }],
+        loops: [],
+        simConfig: defaultSim,
+      };
+      const agenda = buildInterviewAgenda(
+        emptyInterviewNotes(),
+        diagram,
+        "quantify",
+      );
+      expect(agenda.length).toBeLessThanOrEqual(MAX_AGENDA_ITEMS);
+    });
+  });
 });

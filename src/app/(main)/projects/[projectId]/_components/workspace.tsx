@@ -6,6 +6,7 @@ import { DefaultChatTransport, type UIMessage } from "ai";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import type { SimConfigRecord } from "@/lib/diagram/sim-config";
 import type { InterviewNotes } from "@/lib/interview/notes";
 import type { InterviewPhase } from "@/lib/interview/phase";
 import type { Diagram } from "@/lib/queries/diagrams";
@@ -23,6 +24,7 @@ type WorkspaceProps = {
   diagram: Diagram;
   notes: InterviewNotes;
   phase: InterviewPhase;
+  simConfig: SimConfigRecord;
 };
 
 export function Workspace({
@@ -31,6 +33,7 @@ export function Workspace({
   diagram,
   notes,
   phase,
+  simConfig,
 }: WorkspaceProps) {
   const router = useRouter();
 
@@ -135,6 +138,7 @@ export function Workspace({
           projectId={project.id}
           diagram={diagram}
           confirmedLoopIds={notes.confirmedLoopIds}
+          simConfig={simConfig}
         />
         {/* 対話の開閉つまみ。キャンバス左端の垂直中央は、構造 / シミュレーション /
             ツールバー / Controls のどれとも重ならない唯一の位置。縦横どちらの分割でも

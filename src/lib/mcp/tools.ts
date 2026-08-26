@@ -6,7 +6,11 @@ import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
 import { projects } from "@/db/schema";
-import { planDiagramMutation } from "@/lib/diagram/apply-diff";
+import {
+  normalizeName,
+  planDiagramMutation,
+  suggestNodeNames,
+} from "@/lib/diagram/apply-diff";
 import { matchArchetypes } from "@/lib/diagram/archetypes";
 import { diagramDiffSchema } from "@/lib/diagram/diff-schema";
 import { renderDiagramExport } from "@/lib/diagram/export";
@@ -36,6 +40,16 @@ import {
   MAX_REVISIONS_PER_PROJECT,
   restoreRevision,
 } from "@/lib/diagram/revisions";
+import {
+  DEFAULT_SIM_DT,
+  DEFAULT_SIM_STEPS,
+  MAX_SIM_STEPS,
+  MAX_TIME_UNIT_LENGTH,
+  mergeSimConfig,
+  parseSimConfig,
+  type SimConfigRecord,
+  serializeSimConfig,
+} from "@/lib/diagram/sim-config";
 import { toSimEdges, toSimNodes } from "@/lib/diagram/sim-inputs";
 import {
   findBehaviorMismatch,
@@ -49,12 +63,30 @@ import {
   simulate,
 } from "@/lib/diagram/simulate";
 import { loadDiagramSnapshot } from "@/lib/diagram/snapshot";
+import {
+  type KindSuggestion,
+  MAX_KIND_SUGGESTIONS,
+  suggestKinds,
+} from "@/lib/diagram/suggest-kinds";
 import { checkBehaviorConsistency } from "@/lib/interview/consistency";
 import {
   interviewNotesSchema,
   parseInterviewNotes,
 } from "@/lib/interview/notes";
 import { saveInterviewNotes } from "@/lib/interview/store";
+import {
+  applyLimit,
+  collectNeighborhood,
+  DEFAULT_FOCUS_DEPTH,
+  DIAGRAM_SECTIONS,
+  type GraphLink,
+  MAX_FOCUS_DEPTH,
+  SUMMARY_LINT_LIMIT,
+  SUMMARY_LOOP_LIMIT,
+  SUMMARY_RATIONALE_LENGTH,
+  selectSections,
+  summarizeRationale,
+} from "@/lib/mcp/diagram-view";
 import {
   buildMcpInterviewPrompt,
   deriveGuidance,
@@ -72,22 +104,21 @@ const SERVER_INSTRUCTIONS = `interlink は「問いの構造を図にする」�
 
 - ユーザーの悩みを聞き取りながら図を作るときは、interview プロンプトを使うと聞き取りの方法論と現在地が手に入る（最短の入口）
 - 図を読むには get_diagram。ループ（R/B）・lint 指摘・システム原型・構造指標（metrics: ループの交点 = 介入候補）・挙動と構造の整合（consistency）に加え、聞き取りノートと「次に聞くこと」（interview.phase / interview.agenda）も返る
+- 図が大きくなったら get_diagram を絞る: include で読むセクションだけ選び、focus: {nodeName, depth} でその変数の周りだけを見る。根拠（rationale）の全文と全ループが要るときだけ detail: "full"（既定 summary は要約）
 - 図の書き込みは update_diagram（差分形式）。変数は増減を語れる名詞句にし、因果リンクには根拠（rationale）を必ず添える。相関しか確認できていない関係を因果にしない
 - 図を持ち出すときは export_diagram（mermaid はそのまま描画できる。markdown は根拠付きの表）。プロジェクトの改名は update_project、削除は delete_project（取り消せない。ユーザーの明示的な指示があるときだけ）
 - resources でも読める: interlink://projects（一覧）、interlink://projects/{id}/diagram.md（図の markdown）、interlink://projects/{id}/notes.json（聞き取りノート）
+- 変数名の付け直し（lint の「方向を含んでいます」「動詞で終わっています」への対応など）は update_diagram の renameNodes。接続リンクと式の中の参照を保ったまま名前だけ変わる。削除して作り直すとリンクが消える
 - update_diagram は dryRun: true で適用せずに計画と警告だけ確認できる。適用すると閉じた/開いたループと新しい lint 指摘（structure）が返るので、get_diagram を読み直さなくても結果が分かる
 - warnings は {code, target, message, suggestion} の配列。除外された操作は黙って落ちるので、必ず目を通して suggestion を踏まえて再送する
 - 聞き取った事実（テーマ / 時間挙動 / 理想 / 関係者 / 変数候補）は update_notes に記録する。既定は append（差分だけ送れば既存とマージされる）。整理し直すときだけ mode: "replace" で全体を送る
 - 並行編集を避けたいときは get_diagram / 書き込み応答の updatedAt を expectedUpdatedAt に渡す。不一致なら ok: false と最新の updatedAt が返る
 - 図の更新は毎回スナップショットとして記録される。履歴は list_revisions、リビジョン間（または現在との）差分は diff_revisions、戻すのは restore_revision。誤って変数やリンクを消したときはここから戻す（復元自体も記録されるので履歴は消えない）
 - 書き込み系ツールの応答に含まれる interview.phase / interview.agenda は聞き取りの誘導。対話を進めるときはこれに従う
-- ストック&フロー化した図（kind / 式 / 初期値あり）は run_simulation で時間発展を計算し、stock ごとの要約（初期値・最終値・挙動パターン）で実感と突き合わせる。what-if は compare_scenarios（図は変更しない）`;
+- ストック&フロー化した図（kind / 式 / 初期値あり）は run_simulation で時間発展を計算し、stock ごとの要約（初期値・最終値・挙動パターン）で実感と突き合わせる。what-if は compare_scenarios（図は変更しない）
+- CLD を SFD へ昇格させるときは get_diagram の sfdHints（役割の候補と日本語の根拠）を提案の材料にする。役割は文脈で変わるので確定はユーザーに委ね、一時停止テスト（時間を止めても残るか）で確かめてから update_diagram で kind を書く
+- 時間軸（1 ステップ = 週 / 月 …、どこまで先を見るか）が決まったら update_sim_config に保存する。以後 run_simulation の既定値になる`;
 
-/** run_simulation / compare_scenarios の既定値（UI のシミュレーションパネルと同じ） */
-const DEFAULT_SIM_DT = 1;
-const DEFAULT_SIM_STEPS = 20;
-/** 1 回の呼び出しで回せるステップ数の上限（応答肥大・計算時間の歯止め） */
-const MAX_SIM_STEPS = 1000;
 const MAX_SCENARIOS = 8;
 /** 「遅れ」付きリンクの既定の遅らせ幅と上限（simulate の delaySteps） */
 const DEFAULT_DELAY_STEPS = 1;
@@ -99,6 +130,8 @@ const SFD_LINT_RULES = new Set([
   "stock-without-flow",
   "stock-to-stock-edge",
   "undefined-reference",
+  // 数値は出るのに意味が壊れる唯一の型。実行結果を読む前に必ず見せる
+  "unit-mismatch-flow",
 ]);
 
 const simConfigInput = {
@@ -106,7 +139,9 @@ const simConfigInput = {
     .number()
     .positive()
     .optional()
-    .describe(`時間刻み（既定 ${DEFAULT_SIM_DT}）`),
+    .describe(
+      `時間刻み（省略時はプロジェクトの保存値、未保存なら ${DEFAULT_SIM_DT}）`,
+    ),
   steps: z
     .number()
     .int()
@@ -114,7 +149,7 @@ const simConfigInput = {
     .max(MAX_SIM_STEPS)
     .optional()
     .describe(
-      `計算ステップ数（既定 ${DEFAULT_SIM_STEPS}、最大 ${MAX_SIM_STEPS}）`,
+      `計算ステップ数（省略時はプロジェクトの保存値、未保存なら ${DEFAULT_SIM_STEPS}。最大 ${MAX_SIM_STEPS}）`,
     ),
   nonNegativeStocks: z
     .boolean()
@@ -139,6 +174,26 @@ const overridesInput = z
   .describe(
     "変数名 → 値の上書き（図は変更しない）。stock の初期値と constant の値だけ指定できる",
   );
+
+/**
+ * 未分類ノードの昇格候補を応答用に整える。kind = null が 1 つも無ければ null
+ * （SFD 化が済んだ図では出さない）。**提案であって確定ではない**ので、
+ * ユーザーの確認を経てから update_diagram で kind を書く前提で返す
+ */
+function buildSfdHints(suggestions: KindSuggestion[]) {
+  if (suggestions.length === 0) return null;
+  const shown = suggestions.slice(0, MAX_KIND_SUGGESTIONS);
+  return {
+    total: suggestions.length,
+    shown: shown.length,
+    suggestions: shown.map((s) => ({
+      name: s.name,
+      suggestedKind: s.suggestedKind,
+      confidence: s.confidence,
+      reasons: s.reasons,
+    })),
+  };
+}
 
 type SimRunOutcome =
   | { ok: true; summary: SimulationSummary }
@@ -170,12 +225,13 @@ const INTERVIEW_INTRO_PROMPT = `interlink で聞き取りを始めます。ま�
 
 ユーザーに「いま、どんなことが気がかりですか」と尋ねるところから始めてください。`;
 
-/** ツールの実行結果を MCP の text content に包む */
+/**
+ * ツールの実行結果を MCP の text content に包む。
+ * 整形インデントは付けない（読み手は LLM なので、字下げの分だけトークンを損する）
+ */
 function toResult(payload: unknown) {
   return {
-    content: [
-      { type: "text" as const, text: JSON.stringify(payload, null, 2) },
-    ],
+    content: [{ type: "text" as const, text: JSON.stringify(payload) }],
   };
 }
 
@@ -319,14 +375,45 @@ export function buildMcpServer(userId: string) {
   server.registerTool(
     "get_diagram",
     {
-      description:
-        "プロジェクトの因果ループ図の現在地を返す。変数・因果リンク・式由来の情報リンク（dependencies）に加え、導出済みの検証結果（フィードバックループと R/B 極性、lint 指摘、システム原型マッチ）、構造指標（metrics: ノードごとの次数とループ参加数の上位、介入候補 = 複数ループの交点・R と B の接点）、時間挙動と構造の整合判定（consistency: 期待する構造 / 見つかった構造 / 探り方）を含む。loops[].id は update_notes の confirmedLoopIds / hypotheses[].loopIds と archetypeMatches[].loopIds が指す ID。極性 ? は式の符号が構造から決まらない極性未定、derived は式由来リンクを含む暫定ループ。updatedAt は update_* の expectedUpdatedAt に渡せる",
+      description: `プロジェクトの因果ループ図の現在地を返す。変数・因果リンク・式由来の情報リンク（dependencies）に加え、導出済みの検証結果（フィードバックループと R/B 極性、lint 指摘、システム原型マッチ）、構造指標（metrics: ノードごとの次数とループ参加数の上位、介入候補 = 複数ループの交点・R と B の接点）、時間挙動と構造の整合判定（consistency: 期待する構造 / 見つかった構造 / 探り方）を含む。役割（kind）が未分類の変数があれば sfdHints に昇格候補（suggestedKind / confidence / 日本語の根拠）が付く。これは決定的なヒューリスティックによる**提案**で確定ではないので、一時停止テスト（時間を止めても残るか）をユーザーと確かめてから update_diagram で kind を書く。simConfig はシミュレーションの保存設定（dt / steps / timeUnit）で、run_simulation の既定値になる。loops[].id は update_notes の confirmedLoopIds / hypotheses[].loopIds と archetypeMatches[].loopIds が指す ID。極性 ? は式の符号が構造から決まらない極性未定、derived は式由来リンクを含む暫定ループ。updatedAt は update_* の expectedUpdatedAt に渡せる。
+
+大きい図（20 変数以上）では include / focus / detail で絞ることを推奨する。include は読むセクションだけを選ぶ（未指定なら全部）。focus: {nodeName, depth} はその変数から depth ホップ（既定 ${DEFAULT_FOCUS_DEPTH}、最大 ${MAX_FOCUS_DEPTH}）以内の部分グラフと、その変数を通るループだけに絞る（「疲労の周りだけ見たい」を 1 呼び出しで）。detail は既定 summary で、rationale を ${SUMMARY_RATIONALE_LENGTH} 字に切り、loops / lintFindings を各 ${SUMMARY_LOOP_LIMIT} 件までにする（切ったかどうかは loopLimit / lintLimit を見る）。根拠の全文や全ループが要るときだけ detail: "full"。focus が効くのは nodes / edges / dependencies / loops だけで、metrics / consistency / archetypeMatches / sfdHints は図全体から導出した値のまま返る（部分グラフで計算し直すと意味が変わるため。archetypeMatches[].loopIds が絞り込み後の loops[].id に無いことがある）`,
       inputSchema: z.object({
         projectId: z.string().min(1).describe("対象プロジェクトの ID"),
+        include: z
+          .array(z.enum(DIAGRAM_SECTIONS))
+          .min(1)
+          .optional()
+          .describe(
+            "返すセクション（未指定なら全部）。nodes / edges（dependencies 同梱）/ loops（loopLimit 同梱）/ lint / archetypes / metrics / sfd（sfdHints と simConfig）/ notes（interviewNotes と consistency）/ interview（phase と agenda）",
+          ),
+        detail: z
+          .enum(["summary", "full"])
+          .optional()
+          .describe(
+            `summary（既定）= rationale を ${SUMMARY_RATIONALE_LENGTH} 字に切り、loops / lintFindings を各 ${SUMMARY_LOOP_LIMIT} 件まで / full = 全文・全件`,
+          ),
+        focus: z
+          .object({
+            nodeName: z.string().min(1).describe("中心にする変数の名前"),
+            depth: z
+              .number()
+              .int()
+              .min(0)
+              .max(MAX_FOCUS_DEPTH)
+              .optional()
+              .describe(
+                `何ホップ先まで含めるか（既定 ${DEFAULT_FOCUS_DEPTH}、最大 ${MAX_FOCUS_DEPTH}）。0 ならその変数だけ`,
+              ),
+          })
+          .optional()
+          .describe(
+            "指定した変数の周りだけに絞る。リンクの向きは問わず上流・下流の両方を辿る",
+          ),
       }),
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async ({ projectId }) => {
+    async ({ projectId, include, detail, focus }) => {
       const project = await findOwnedProject(projectId, userId);
       if (!project) {
         return toError("プロジェクトが見つかりません");
@@ -337,81 +424,185 @@ export function buildMcpServer(userId: string) {
       const loopEdges = buildLoopEdges(diagram);
       const loopResult = detectLoops(diagram.nodes, loopEdges);
       const guidance = deriveGuidance(project, diagram);
-      const metrics = computeDiagramMetrics(
-        diagram.nodes,
-        loopEdges,
-        loopResult.loops,
-      );
       const nameById = new Map(diagram.nodes.map((n) => [n.id, n.name]));
+      const sections = selectSections(include);
+      const full = detail === "full";
+
+      // focus は「その変数の周り」を切り出すだけ。metrics / consistency /
+      // archetypeMatches / sfdHints は図全体の性質なので絞らない
+      // （部分グラフで計算し直すと別のことを言う指標になる）
+      let focusView: {
+        nodeName: string;
+        depth: number;
+        shownNodes: number;
+        totalNodes: number;
+      } | null = null;
+      let visibleNodes = diagram.nodes;
+      let visibleEdges = diagram.edges;
+      let visibleDependencies = dependencies;
+      let visibleLoops = loopResult.loops;
+      if (focus) {
+        const key = normalizeName(focus.nodeName);
+        const center = diagram.nodes.find((n) => normalizeName(n.name) === key);
+        if (!center) {
+          const suggestion = suggestNodeNames(
+            focus.nodeName,
+            diagram.nodes.map((n) => n.name),
+          );
+          return toError(
+            `焦点にする変数「${focus.nodeName}」が図にありません${
+              suggestion.length > 0
+                ? `。近い変数: ${suggestion.join(" / ")}`
+                : ""
+            }`,
+          );
+        }
+        const depth = focus.depth ?? DEFAULT_FOCUS_DEPTH;
+        const links: GraphLink[] = [
+          ...diagram.edges.map((e) => ({
+            from: e.sourceNodeId,
+            to: e.targetNodeId,
+          })),
+          ...dependencies.map((d) => ({ from: d.fromNodeId, to: d.toNodeId })),
+        ];
+        const nodeIds = collectNeighborhood(links, center.id, depth);
+        visibleNodes = diagram.nodes.filter((n) => nodeIds.has(n.id));
+        visibleEdges = diagram.edges.filter(
+          (e) => nodeIds.has(e.sourceNodeId) && nodeIds.has(e.targetNodeId),
+        );
+        visibleDependencies = dependencies.filter(
+          (d) => nodeIds.has(d.fromNodeId) && nodeIds.has(d.toNodeId),
+        );
+        visibleLoops = loopResult.loops.filter((l) =>
+          l.nodeIds.includes(center.id),
+        );
+        focusView = {
+          nodeName: center.name,
+          depth,
+          shownNodes: visibleNodes.length,
+          totalNodes: diagram.nodes.length,
+        };
+      }
+
+      // 上流（detectLoops の MAX_LOOPS 打ち切り）で既に落ちていれば truncated を引き継ぐ
+      const loopView = applyLimit(
+        visibleLoops,
+        full ? MAX_LOOPS : SUMMARY_LOOP_LIMIT,
+        loopResult.truncated,
+      );
+      const lintView = applyLimit(
+        sections.has("lint")
+          ? lintDiagram(diagram.nodes, diagram.edges, {
+              loops: loopResult.loops,
+              confirmedLoopIds: guidance.notes.confirmedLoopIds,
+            })
+          : [],
+        full ? null : SUMMARY_LINT_LIMIT,
+      );
+      const metrics = sections.has("metrics")
+        ? computeDiagramMetrics(diagram.nodes, loopEdges, loopResult.loops)
+        : null;
+
       return toResult({
         project: { id: project.id, title: project.title },
         updatedAt: versionOf(project),
-        nodes: diagram.nodes.map((n) => ({
-          name: n.name,
-          memo: n.memo,
-          unit: n.unit,
-          kind: n.kind,
-          expression: n.expression,
-          initialValue: n.initialValue,
-          value: n.value,
-        })),
-        edges: diagram.edges.map((e) => ({
-          source: e.sourceName,
-          target: e.targetName,
-          polarity: e.polarity,
-          hasDelay: e.hasDelay,
-          rationale: e.rationale,
-          status: e.status,
-        })),
-        dependencies: dependencies.map((d) => ({
-          from: nameById.get(d.fromNodeId) ?? "",
-          to: nameById.get(d.toNodeId) ?? "",
-          polarity: d.polarity,
-        })),
-        loops: loopResult.loops.map((l) => ({
-          id: l.id,
-          label: l.label,
-          polarity: l.polarity,
-          hasDelay: l.hasDelay,
-          derived: l.derived === true,
-          nodeNames: l.nodeNames,
-          edges: l.nodeNames.map((source, i) => ({
-            source,
-            target: l.nodeNames[(i + 1) % l.nodeNames.length],
-          })),
-        })),
-        loopLimit: {
-          truncated: loopResult.truncated,
-          shown: loopResult.loops.length,
-          limit: MAX_LOOPS,
-        },
-        lintFindings: lintDiagram(diagram.nodes, diagram.edges, {
-          loops: loopResult.loops,
-          confirmedLoopIds: guidance.notes.confirmedLoopIds,
-        }),
-        archetypeMatches: matchArchetypes(loopResult.loops),
-        metrics: {
-          nodes: metrics.nodes.slice(0, MAX_METRIC_NODES).map((m) => ({
-            name: m.name,
-            inDegree: m.inDegree,
-            outDegree: m.outDegree,
-            loopCount: m.loopCount,
-            reinforcingLoopCount: m.reinforcingLoopCount,
-            balancingLoopCount: m.balancingLoopCount,
-          })),
-          interventionCandidates: metrics.interventionCandidates
-            .slice(0, MAX_INTERVENTION_CANDIDATES)
-            .map((c) => ({
-              name: c.name,
-              reason: c.reason,
-              description: describeCandidate(c),
-              loopIds: c.loopIds,
-              loopLabels: c.loopLabels,
-            })),
-        },
-        consistency: checkBehaviorConsistency(guidance.notes, loopResult.loops),
-        interviewNotes: guidance.notes,
-        interview: { phase: guidance.phase, agenda: guidance.agenda },
+        ...(focusView ? { focus: focusView } : {}),
+        ...(sections.has("nodes")
+          ? {
+              nodes: visibleNodes.map((n) => ({
+                name: n.name,
+                memo: n.memo,
+                unit: n.unit,
+                kind: n.kind,
+                expression: n.expression,
+                initialValue: n.initialValue,
+                value: n.value,
+              })),
+            }
+          : {}),
+        ...(sections.has("edges")
+          ? {
+              edges: visibleEdges.map((e) => ({
+                source: e.sourceName,
+                target: e.targetName,
+                polarity: e.polarity,
+                hasDelay: e.hasDelay,
+                rationale: full ? e.rationale : summarizeRationale(e.rationale),
+                status: e.status,
+              })),
+              dependencies: visibleDependencies.map((d) => ({
+                from: nameById.get(d.fromNodeId) ?? "",
+                to: nameById.get(d.toNodeId) ?? "",
+                polarity: d.polarity,
+              })),
+            }
+          : {}),
+        ...(sections.has("loops")
+          ? {
+              loops: loopView.items.map((l) => ({
+                id: l.id,
+                label: l.label,
+                polarity: l.polarity,
+                hasDelay: l.hasDelay,
+                derived: l.derived === true,
+                nodeNames: l.nodeNames,
+                edges: l.nodeNames.map((source, i) => ({
+                  source,
+                  target: l.nodeNames[(i + 1) % l.nodeNames.length],
+                })),
+              })),
+              loopLimit: loopView.info,
+            }
+          : {}),
+        ...(sections.has("lint")
+          ? { lintFindings: lintView.items, lintLimit: lintView.info }
+          : {}),
+        ...(sections.has("archetypes")
+          ? { archetypeMatches: matchArchetypes(loopResult.loops) }
+          : {}),
+        ...(metrics
+          ? {
+              metrics: {
+                nodes: metrics.nodes.slice(0, MAX_METRIC_NODES).map((m) => ({
+                  name: m.name,
+                  inDegree: m.inDegree,
+                  outDegree: m.outDegree,
+                  loopCount: m.loopCount,
+                  reinforcingLoopCount: m.reinforcingLoopCount,
+                  balancingLoopCount: m.balancingLoopCount,
+                })),
+                interventionCandidates: metrics.interventionCandidates
+                  .slice(0, MAX_INTERVENTION_CANDIDATES)
+                  .map((c) => ({
+                    name: c.name,
+                    reason: c.reason,
+                    description: describeCandidate(c),
+                    loopIds: c.loopIds,
+                    loopLabels: c.loopLabels,
+                  })),
+              },
+            }
+          : {}),
+        ...(sections.has("sfd")
+          ? {
+              sfdHints: buildSfdHints(
+                suggestKinds(diagram.nodes, loopEdges, loopResult.loops),
+              ),
+              simConfig: parseSimConfig(project.simConfig),
+            }
+          : {}),
+        ...(sections.has("notes")
+          ? {
+              consistency: checkBehaviorConsistency(
+                guidance.notes,
+                loopResult.loops,
+              ),
+              interviewNotes: guidance.notes,
+            }
+          : {}),
+        ...(sections.has("interview")
+          ? { interview: { phase: guidance.phase, agenda: guidance.agenda } }
+          : {}),
       });
     },
   );
@@ -420,7 +611,7 @@ export function buildMcpServer(userId: string) {
     "update_diagram",
     {
       description:
-        "因果ループ図を差分で更新する。変数・因果リンクの追加/更新/削除を一括で指定できる。既存の図への増分修正として使うこと。変数は ID ではなく名前で参照する。dryRun: true なら適用せずに計画（plan）と警告だけ返す。適用時は件数に加え、閉じた/開いたループと新しい lint 指摘（structure）を返す。warnings にある操作は除外されたまま残りが適用されるので、必ず確認して再送する",
+        "因果ループ図を差分で更新する。変数・因果リンクの追加/更新/削除/改名を一括で指定できる。既存の図への増分修正として使うこと。変数は ID ではなく名前で参照する。変数名を変えるときは renameNodes を使う（deleteNodes + upsertNodes だと接続リンクが消える）。dryRun: true なら適用せずに計画（plan）と警告だけ返す。適用時は件数に加え、閉じた/開いたループと新しい lint 指摘（structure）を返す。warnings にある操作は除外されたまま残りが適用されるので、必ず確認して再送する",
       inputSchema: z.object({
         projectId: z.string().min(1).describe("対象プロジェクトの ID"),
         diff: diagramDiffSchema,
@@ -456,14 +647,16 @@ export function buildMcpServer(userId: string) {
         });
       }
       const { plan } = planResult;
+      const nameOf = (id: string) =>
+        current.nodes.find((c) => c.id === id)?.name ?? id;
       const planSummary = {
         createNodes: plan.createNodes.map((n) => n.name),
-        updateNodes: plan.updateNodes.map(
-          (n) => current.nodes.find((c) => c.id === n.id)?.name ?? n.id,
+        // 名前は改名前のもの（改名分は renameNodes に from→to で出す）
+        updateNodes: plan.updateNodes.map((n) => nameOf(n.id)),
+        renameNodes: plan.updateNodes.flatMap((n) =>
+          n.name === undefined ? [] : [`${nameOf(n.id)}→${n.name}`],
         ),
-        deleteNodes: plan.deleteNodeIds.map(
-          (id) => current.nodes.find((c) => c.id === id)?.name ?? id,
-        ),
+        deleteNodes: plan.deleteNodeIds.map(nameOf),
         createEdges: plan.createEdges.map(
           (e) => `${e.sourceName}→${e.targetName}`,
         ),
@@ -786,6 +979,64 @@ export function buildMcpServer(userId: string) {
   );
 
   server.registerTool(
+    "update_sim_config",
+    {
+      description: `シミュレーションの設定（時間刻み dt / ステップ数 steps / 1 ステップが表す時間単位 timeUnit）をプロジェクトに保存する。run_simulation / compare_scenarios で引数を省略したときの既定値になり、アプリのシミュレーションパネルにも同じ値が出る。「1 ステップを週と見て 1 年先まで」のように時間軸が決まったら記録する。送ったキーだけ更新され、省略したキーは元のまま。timeUnit に null を送ると未設定へ戻る（steps の上限 ${MAX_SIM_STEPS}）`,
+      inputSchema: z.object({
+        projectId: z.string().min(1).describe("対象プロジェクトの ID"),
+        dt: z.number().positive().optional().describe("時間刻み"),
+        steps: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_SIM_STEPS)
+          .optional()
+          .describe("計算ステップ数"),
+        timeUnit: z
+          .string()
+          .max(MAX_TIME_UNIT_LENGTH)
+          .nullable()
+          .optional()
+          .describe("1 ステップが表す時間単位（例: 週、月、四半期）"),
+        expectedUpdatedAt: expectedUpdatedAtSchema,
+      }),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async ({ projectId, dt, steps, timeUnit, expectedUpdatedAt }) => {
+      const project = await findOwnedProject(projectId, userId);
+      if (!project) {
+        return toError("プロジェクトが見つかりません");
+      }
+      const conflict = checkVersion(project, expectedUpdatedAt);
+      if (conflict) return conflict;
+
+      const patch: Partial<SimConfigRecord> = {};
+      if (dt !== undefined) patch.dt = dt;
+      if (steps !== undefined) patch.steps = steps;
+      if (timeUnit !== undefined) patch.timeUnit = timeUnit;
+      const simConfig = mergeSimConfig(
+        parseSimConfig(project.simConfig),
+        patch,
+      );
+      await db
+        .update(projects)
+        .set({ simConfig: serializeSimConfig(simConfig) })
+        .where(eq(projects.id, projectId));
+      const saved = (await findOwnedProject(projectId, userId)) ?? project;
+      return toResult({
+        ok: true,
+        simConfig,
+        updatedAt: versionOf(saved),
+      });
+    },
+  );
+
+  server.registerTool(
     "delete_project",
     {
       description:
@@ -933,9 +1184,11 @@ export function buildMcpServer(userId: string) {
         return toError("プロジェクトが見つかりません");
       }
       const diagram = await loadDiagramSnapshot(projectId);
+      // 引数 → プロジェクトの保存設定 → 既定値、の順で決める
+      const saved = parseSimConfig(project.simConfig);
       const config: SimConfig = {
-        dt: dt ?? DEFAULT_SIM_DT,
-        steps: steps ?? DEFAULT_SIM_STEPS,
+        dt: dt ?? saved.dt,
+        steps: steps ?? saved.steps,
         overrides,
         nonNegativeStocks,
         delaySteps: delaySteps ?? DEFAULT_DELAY_STEPS,
@@ -955,6 +1208,7 @@ export function buildMcpServer(userId: string) {
       return toResult({
         ok: true,
         ...outcome.summary,
+        timeUnit: saved.timeUnit,
         warnings,
         mismatch,
       });
@@ -999,9 +1253,10 @@ export function buildMcpServer(userId: string) {
         return toError("プロジェクトが見つかりません");
       }
       const diagram = await loadDiagramSnapshot(projectId);
+      const saved = parseSimConfig(project.simConfig);
       const base: SimConfig = {
-        dt: dt ?? DEFAULT_SIM_DT,
-        steps: steps ?? DEFAULT_SIM_STEPS,
+        dt: dt ?? saved.dt,
+        steps: steps ?? saved.steps,
         nonNegativeStocks,
         delaySteps: delaySteps ?? DEFAULT_DELAY_STEPS,
       };
@@ -1031,6 +1286,7 @@ export function buildMcpServer(userId: string) {
         ok: true,
         dt: base.dt,
         steps: base.steps,
+        timeUnit: saved.timeUnit,
         baseline: { stocks: baseline.summary.stocks },
         scenarios: results,
       });

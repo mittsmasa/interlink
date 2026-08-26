@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { EdgeStatus } from "@/db/schema";
-import { lintDiagram } from "./lint";
+import { type LintFinding, lintDiagram } from "./lint";
 import type { Loop } from "./loops";
 
 const edge = (
@@ -318,5 +318,142 @@ describe("lintDiagram: SFD 整合ルール", () => {
       [edge("e1", "a", "b"), edge("e2", "b", "c"), edge("e3", "c", "a")],
     );
     expect(findings).toEqual([]);
+  });
+});
+
+describe("lintDiagram: 単位の整合", () => {
+  const stock = (id: string, name: string, unit: string | null) => ({
+    id,
+    name,
+    unit,
+    kind: "stock",
+  });
+  const flow = (id: string, name: string, unit: string | null) => ({
+    id,
+    name,
+    unit,
+    kind: "flow",
+    expression: "1",
+  });
+  const mismatches = (findings: LintFinding[]) =>
+    findings.filter((f) => f.rule === "unit-mismatch-flow");
+
+  it("flow が「ストックの単位/時間」の率なら指摘しない", () => {
+    const findings = lintDiagram(
+      [stock("s", "疲労", "ポイント"), flow("f", "残業増", "ポイント/日")],
+      [edge("e1", "f", "s")],
+    );
+    expect(mismatches(findings)).toEqual([]);
+  });
+
+  it("flow の単位が時点の量なら unit-mismatch-flow（直し方まで書く）", () => {
+    const findings = lintDiagram(
+      [stock("s", "疲労", "ポイント"), flow("f", "残業増", "回")],
+      [edge("e1", "f", "s")],
+    );
+    const finding = mismatches(findings)[0];
+    expect(finding).toMatchObject({
+      severity: "warning",
+      nodeIds: ["f"],
+      edgeIds: ["e1"],
+    });
+    expect(finding?.message).toContain("「残業増」の単位が「回」");
+    expect(finding?.message).toContain("ストック「疲労」（単位: ポイント）");
+    expect(finding?.message).toContain("「ポイント/日」");
+  });
+
+  it("率でも分子の量が違えば unit-mismatch-flow（時間単位は flow に合わせて見せる）", () => {
+    const findings = lintDiagram(
+      [stock("s", "疲労", "ポイント"), flow("f", "残業増", "件/週")],
+      [edge("e1", "f", "s")],
+    );
+    const finding = mismatches(findings)[0];
+    expect(finding?.severity).toBe("warning");
+    expect(finding?.message).toContain("「ポイント/週」");
+  });
+
+  it("英語表記でも量が揃っていれば指摘しない", () => {
+    const findings = lintDiagram(
+      [stock("s", "在庫", "Units"), flow("f", "入荷", "unit/day")],
+      [edge("e1", "f", "s")],
+    );
+    expect(mismatches(findings)).toEqual([]);
+  });
+
+  it("読めない単位・時間でない分母は判定しない", () => {
+    const unknown = lintDiagram(
+      [stock("s", "残高", "円"), flow("f", "利息", "円/人")],
+      [edge("e1", "f", "s")],
+    );
+    expect(mismatches(unknown)).toEqual([]);
+
+    const empty = lintDiagram(
+      [stock("s", "残高", "円"), flow("f", "利息", null)],
+      [edge("e1", "f", "s")],
+    );
+    expect(mismatches(empty)).toEqual([]);
+  });
+
+  it("stock 自身が率なら判定しない（平滑化した成長率など）", () => {
+    const findings = lintDiagram(
+      [stock("s", "認識成長率", "%/年"), flow("f", "認識の更新", "%/月")],
+      [edge("e1", "f", "s")],
+    );
+    expect(mismatches(findings)).toEqual([]);
+  });
+
+  it("flow → stock 以外のリンクは見ない", () => {
+    const findings = lintDiagram(
+      [
+        stock("s", "疲労", "ポイント"),
+        flow("f", "残業増", "ポイント/日"),
+        {
+          id: "a",
+          name: "ミス率",
+          kind: "auxiliary",
+          unit: "回",
+          expression: "疲労/100",
+        },
+      ],
+      [edge("e1", "f", "s"), edge("e2", "a", "s")],
+    );
+    expect(mismatches(findings)).toEqual([]);
+  });
+
+  it("kind の無い CLD では単位を見ない", () => {
+    const findings = lintDiagram(
+      [
+        { id: "a", name: "残業時間", unit: "回" },
+        { id: "b", name: "疲労", unit: "ポイント" },
+      ],
+      [edge("e1", "a", "b")],
+    );
+    expect(findings).toEqual([]);
+  });
+
+  it("stock / flow に単位が無ければ unit-missing-on-sfd（info）", () => {
+    const findings = lintDiagram(
+      [stock("s", "疲労", null), flow("f", "残業増", "  ")],
+      [edge("e1", "f", "s")],
+    );
+    const missing = findings.filter((f) => f.rule === "unit-missing-on-sfd");
+    expect(missing).toHaveLength(2);
+    expect(missing.every((f) => f.severity === "info")).toBe(true);
+    expect(missing[0]?.message).toContain("stock「疲労」に単位がありません");
+    expect(missing[1]?.message).toContain("「ポイント/日」のような");
+  });
+
+  it("auxiliary / constant と CLD ノードには unit-missing-on-sfd を出さない", () => {
+    const findings = lintDiagram(
+      [
+        stock("s", "疲労", "ポイント"),
+        flow("f", "残業増", "ポイント/日"),
+        { id: "a", name: "ミス率", kind: "auxiliary", expression: "疲労/100" },
+        { id: "c", name: "体力上限", kind: "constant" },
+        { id: "n", name: "残業時間" },
+      ],
+      [edge("e1", "f", "s")],
+    );
+    expect(findings.some((f) => f.rule === "unit-missing-on-sfd")).toBe(false);
   });
 });

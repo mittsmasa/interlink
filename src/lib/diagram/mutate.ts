@@ -33,10 +33,12 @@ export async function applyMutationPlan(
     }
     for (const node of plan.updateNodes) {
       // 指定された列だけ更新する（undefined の列は触らない）。SFD 列は kind 指定が
-      // あったノードにのみ含まれ、memo/unit のみの更新で既存の役割を消さない
+      // あったノードにのみ含まれ、memo/unit のみの更新で既存の役割を消さない。
+      // name は改名するノードにのみ含まれ、接続エッジは ID 参照なので影響を受けない
       await tx
         .update(nodes)
         .set({
+          ...(node.name !== undefined ? { name: node.name } : {}),
           ...(node.memo !== undefined ? { memo: node.memo } : {}),
           ...(node.unit !== undefined ? { unit: node.unit } : {}),
           ...(node.kind !== undefined ? { kind: node.kind } : {}),

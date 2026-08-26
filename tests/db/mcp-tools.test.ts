@@ -25,7 +25,7 @@ function textOf(result: Awaited<ReturnType<Client["callTool"]>>) {
 }
 
 describe("MCP tools", () => {
-  it("tools/list で 13 ツールが列挙される", async () => {
+  it("tools/list で 14 ツールが列挙される", async () => {
     const user = await createUser();
     const client = await connectClient(user.id);
     const { tools } = await client.listTools();
@@ -43,6 +43,7 @@ describe("MCP tools", () => {
       "update_diagram",
       "update_notes",
       "update_project",
+      "update_sim_config",
     ]);
     // diff スキーマが JSON Schema へ変換されて公開されていること（zod 4 互換の確認）
     const update = tools.find((t) => t.name === "update_diagram");
@@ -173,10 +174,11 @@ describe("MCP tools", () => {
       ["残業時間→疲労", "疲労→残業時間"].sort(),
     );
     expect(loop.edges[0].source).toBe(loop.nodeNames[0]);
+    // 既定は detail: summary なので上限は要約側の 10（full なら MAX_LOOPS = 50）
     expect(diagram.loopLimit).toEqual({
       truncated: false,
       shown: 1,
-      limit: 50,
+      limit: 10,
     });
 
     // 返した id で確認済みループとして記録でき、agenda から未確認の指示が消える
@@ -414,6 +416,47 @@ describe("MCP tools", () => {
     // 因果 1 本 + 式由来 1 本で閉じた暫定 R ループ
     expect(diagram.loops).toHaveLength(1);
     expect(diagram.loops[0]).toMatchObject({ polarity: "R", derived: true });
+  });
+
+  it("get_diagram の lintFindings に単位の不整合（unit-mismatch-flow）が載る", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+
+    // ストックは時点の量（ポイント）なのに、それを動かすフローが率になっていない
+    await client.callTool({
+      name: "update_diagram",
+      arguments: {
+        projectId: project.id,
+        diff: {
+          upsertNodes: [
+            { name: "疲労", kind: "stock", unit: "ポイント", initialValue: 30 },
+            { name: "残業増", kind: "flow", unit: "回", expression: "5" },
+          ],
+          upsertEdges: [
+            {
+              source: "残業増",
+              target: "疲労",
+              polarity: "+",
+              rationale: "残業が疲労を溜める",
+            },
+          ],
+        },
+      },
+    });
+
+    const read = await client.callTool({
+      name: "get_diagram",
+      arguments: { projectId: project.id },
+    });
+    const diagram = JSON.parse(textOf(read)) as {
+      lintFindings: { rule: string; severity: string; message: string }[];
+    };
+    const finding = diagram.lintFindings.find(
+      (f) => f.rule === "unit-mismatch-flow",
+    );
+    expect(finding?.severity).toBe("warning");
+    expect(finding?.message).toContain("「ポイント/日」");
   });
 
   it("他ユーザーの project は get_diagram / update_diagram とも見つからない", async () => {
@@ -873,6 +916,369 @@ describe("MCP tools", () => {
   });
 });
 
+describe("get_diagram の絞り込み", () => {
+  /** 40 字を超える根拠（detail の要約対象） */
+  const LONG_RATIONALE =
+    "残業が続くと休む時間が削られ、睡眠不足が積み重なって疲れが抜けなくなる。半年ほど前からこの状態が続いている";
+
+  /**
+   * 疲労を通る R / B が交差し、2 ホップ先に疲労を通らない別ループがある図。
+   * R: 残業時間→疲労→ミス→残業時間 / B: 疲労⇄休息（遅れ付き）/ 残業時間⇄家庭時間
+   */
+  async function createFocusModel(client: Client, projectId: string) {
+    const update = await client.callTool({
+      name: "update_diagram",
+      arguments: {
+        projectId,
+        diff: {
+          upsertNodes: [
+            { name: "残業時間" },
+            { name: "疲労" },
+            { name: "ミス" },
+            { name: "休息" },
+            { name: "家庭時間" },
+          ],
+          upsertEdges: [
+            {
+              source: "残業時間",
+              target: "疲労",
+              polarity: "+",
+              rationale: LONG_RATIONALE,
+            },
+            { source: "疲労", target: "ミス", polarity: "+", rationale: "-" },
+            {
+              source: "ミス",
+              target: "残業時間",
+              polarity: "+",
+              rationale: "-",
+            },
+            { source: "疲労", target: "休息", polarity: "+", rationale: "-" },
+            {
+              source: "休息",
+              target: "疲労",
+              polarity: "-",
+              hasDelay: true,
+              rationale: "-",
+            },
+            {
+              source: "残業時間",
+              target: "家庭時間",
+              polarity: "-",
+              rationale: "-",
+            },
+            {
+              source: "家庭時間",
+              target: "残業時間",
+              polarity: "-",
+              rationale: "-",
+            },
+          ],
+        },
+      },
+    });
+    expect(update.isError).toBeFalsy();
+  }
+
+  type DiagramPayload = {
+    nodes?: { name: string }[];
+    edges?: { source: string; target: string; rationale: string | null }[];
+    dependencies?: { from: string; to: string }[];
+    loops?: { id: string; nodeNames: string[] }[];
+    loopLimit?: { truncated: boolean; shown: number; limit: number | null };
+    lintFindings?: { rule: string }[];
+    lintLimit?: { truncated: boolean; shown: number; limit: number | null };
+    archetypeMatches?: { archetypeId: string; loopIds: string[] }[];
+    focus?: {
+      nodeName: string;
+      depth: number;
+      shownNodes: number;
+      totalNodes: number;
+    };
+  };
+
+  async function readDiagram(
+    client: Client,
+    args: Record<string, unknown>,
+  ): Promise<DiagramPayload & Record<string, unknown>> {
+    const result = await client.callTool({
+      name: "get_diagram",
+      arguments: args,
+    });
+    expect(result.isError).toBeFalsy();
+    return JSON.parse(textOf(result));
+  }
+
+  it("include 未指定なら従来どおり全セクションが揃う", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+    await createFocusModel(client, project.id);
+
+    const payload = await readDiagram(client, { projectId: project.id });
+    expect(Object.keys(payload).sort()).toEqual(
+      [
+        "project",
+        "updatedAt",
+        "nodes",
+        "edges",
+        "dependencies",
+        "loops",
+        "loopLimit",
+        "lintFindings",
+        "lintLimit",
+        "archetypeMatches",
+        "metrics",
+        "sfdHints",
+        "simConfig",
+        "consistency",
+        "interviewNotes",
+        "interview",
+      ].sort(),
+    );
+  });
+
+  it("include で指定したセクションだけ返る", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+    await createFocusModel(client, project.id);
+
+    const payload = await readDiagram(client, {
+      projectId: project.id,
+      include: ["nodes", "loops"],
+    });
+    // project / updatedAt は版として常に返す
+    expect(Object.keys(payload).sort()).toEqual(
+      ["project", "updatedAt", "nodes", "loops", "loopLimit"].sort(),
+    );
+    expect(payload.nodes).toHaveLength(5);
+
+    // SFD 向けの sfdHints / simConfig も同じ単位で選べる
+    const sfd = await readDiagram(client, {
+      projectId: project.id,
+      include: ["sfd"],
+    });
+    expect(Object.keys(sfd).sort()).toEqual(
+      ["project", "updatedAt", "sfdHints", "simConfig"].sort(),
+    );
+  });
+
+  it("focus は指定した変数から depth ホップ以内の部分グラフと、その変数を通るループに絞る", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+    await createFocusModel(client, project.id);
+
+    const focused = await readDiagram(client, {
+      projectId: project.id,
+      focus: { nodeName: "疲労", depth: 1 },
+    });
+    // 家庭時間は残業時間の先（疲労から 2 ホップ）なので落ちる
+    expect(focused.nodes?.map((n) => n.name).sort()).toEqual(
+      ["ミス", "休息", "残業時間", "疲労"].sort(),
+    );
+    // 両端が部分グラフに残っているエッジだけ返る
+    expect(focused.edges?.map((e) => `${e.source}→${e.target}`).sort()).toEqual(
+      [
+        "残業時間→疲労",
+        "疲労→ミス",
+        "ミス→残業時間",
+        "疲労→休息",
+        "休息→疲労",
+      ].sort(),
+    );
+    // 疲労を通る R と B の 2 本だけ（残業時間⇄家庭時間 のループは消える）
+    expect(focused.loops).toHaveLength(2);
+    expect(focused.loops?.every((l) => l.nodeNames.includes("疲労"))).toBe(
+      true,
+    );
+    expect(focused.focus).toEqual({
+      nodeName: "疲労",
+      depth: 1,
+      shownNodes: 4,
+      totalNodes: 5,
+    });
+
+    // depth 2 なら家庭時間まで届くが、疲労を通らないループは依然として返らない
+    const wider = await readDiagram(client, {
+      projectId: project.id,
+      focus: { nodeName: "疲労", depth: 2 },
+    });
+    expect(wider.nodes).toHaveLength(5);
+    expect(wider.loops).toHaveLength(2);
+
+    // focus なしなら 3 本すべて返る
+    const all = await readDiagram(client, { projectId: project.id });
+    expect(all.loops).toHaveLength(3);
+    expect(all.focus).toBeUndefined();
+  });
+
+  it("focus は式由来リンク（dependencies）も両端で絞る", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+    await client.callTool({
+      name: "update_diagram",
+      arguments: {
+        projectId: project.id,
+        diff: {
+          upsertNodes: [
+            { name: "残高", kind: "stock", initialValue: 100 },
+            { name: "利息", kind: "flow", expression: "残高*0.1" },
+            { name: "手数料" },
+          ],
+          upsertEdges: [
+            { source: "利息", target: "残高", polarity: "+", rationale: "a" },
+            { source: "手数料", target: "残高", polarity: "-", rationale: "b" },
+          ],
+        },
+      },
+    });
+
+    // 手数料から 1 ホップは残高まで。残高→利息 の情報リンクは利息が範囲外なので落ちる
+    const near = await readDiagram(client, {
+      projectId: project.id,
+      focus: { nodeName: "手数料", depth: 1 },
+    });
+    expect(near.nodes?.map((n) => n.name).sort()).toEqual(["手数料", "残高"]);
+    expect(near.edges?.map((e) => `${e.source}→${e.target}`)).toEqual([
+      "手数料→残高",
+    ]);
+    expect(near.dependencies).toEqual([]);
+    expect(near.loops).toEqual([]);
+
+    // 2 ホップなら利息まで届き、情報リンクとそれで閉じる暫定ループも戻る
+    const wider = await readDiagram(client, {
+      projectId: project.id,
+      focus: { nodeName: "手数料", depth: 2 },
+    });
+    expect(wider.dependencies).toEqual([
+      { from: "残高", to: "利息", polarity: "+" },
+    ]);
+    // 手数料を通らないループなので loops には出ない
+    expect(wider.loops).toEqual([]);
+  });
+
+  it("図にない変数を focus すると近い変数名を添えたエラーになる", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+    await createFocusModel(client, project.id);
+
+    const result = await client.callTool({
+      name: "get_diagram",
+      arguments: { projectId: project.id, focus: { nodeName: "疲れ" } },
+    });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain("疲労");
+  });
+
+  it("detail は既定 summary で根拠を切り詰め、full で全文を返す", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+    await createFocusModel(client, project.id);
+
+    const summary = await readDiagram(client, { projectId: project.id });
+    const summarized = summary.edges?.find(
+      (e) => e.target === "疲労" && e.source === "残業時間",
+    );
+    expect(summarized?.rationale).toBe(
+      `${Array.from(LONG_RATIONALE).slice(0, 40).join("")}…`,
+    );
+    expect(summary.loopLimit).toMatchObject({ limit: 10, truncated: false });
+    expect(summary.lintLimit).toMatchObject({ limit: 10 });
+
+    const full = await readDiagram(client, {
+      projectId: project.id,
+      detail: "full",
+    });
+    const whole = full.edges?.find(
+      (e) => e.target === "疲労" && e.source === "残業時間",
+    );
+    expect(whole?.rationale).toBe(LONG_RATIONALE);
+    expect(full.loopLimit).toMatchObject({ limit: 50, truncated: false });
+    // full の lint は上限なし
+    expect(full.lintLimit).toMatchObject({ limit: null, truncated: false });
+    expect(full.lintFindings?.length).toBe(full.lintLimit?.shown);
+  });
+
+  it("archetypeMatches は focus / detail の影響を受けず、常に全ループから計算される", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+    await createFocusModel(client, project.id);
+
+    const all = await readDiagram(client, { projectId: project.id });
+    expect(all.archetypeMatches?.length).toBeGreaterThan(0);
+
+    const focused = await readDiagram(client, {
+      projectId: project.id,
+      include: ["archetypes"],
+      focus: { nodeName: "疲労", depth: 1 },
+    });
+    expect(focused.archetypeMatches).toEqual(all.archetypeMatches);
+  });
+
+  it("focus.depth の範囲外と未知の include はスキーマで弾かれる", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+    await createFocusModel(client, project.id);
+
+    const tooDeep = await client.callTool({
+      name: "get_diagram",
+      arguments: {
+        projectId: project.id,
+        focus: { nodeName: "疲労", depth: 7 },
+      },
+    });
+    expect(tooDeep.isError).toBe(true);
+    const negative = await client.callTool({
+      name: "get_diagram",
+      arguments: {
+        projectId: project.id,
+        focus: { nodeName: "疲労", depth: -1 },
+      },
+    });
+    expect(negative.isError).toBe(true);
+    const unknownSection = await client.callTool({
+      name: "get_diagram",
+      arguments: { projectId: project.id, include: ["loops", "everything"] },
+    });
+    expect(unknownSection.isError).toBe(true);
+  });
+
+  it("応答は整形インデントを含まない", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+    await createFocusModel(client, project.id);
+
+    const result = await client.callTool({
+      name: "get_diagram",
+      arguments: { projectId: project.id },
+    });
+    const text = textOf(result);
+    expect(text.startsWith('{"project":')).toBe(true);
+    expect(text).not.toContain("\n  ");
+  });
+
+  it("ツール説明とサーバー案内が絞り込みの使い方に触れている", async () => {
+    const user = await createUser();
+    const client = await connectClient(user.id);
+    const { tools } = await client.listTools();
+    const description =
+      tools.find((t) => t.name === "get_diagram")?.description ?? "";
+    for (const keyword of ["include", "focus", "detail"]) {
+      expect(description).toContain(keyword);
+    }
+    const instructions = client.getInstructions() ?? "";
+    expect(instructions).toContain("include");
+    expect(instructions).toContain("focus");
+  });
+});
+
 describe("MCP resources", () => {
   it("resources/list に一覧が、templates に diagram.md / notes.json が載る", async () => {
     const user = await createUser();
@@ -1287,6 +1693,43 @@ describe("MCP simulation tools", () => {
     );
   });
 
+  it("run_simulation は単位の不整合も warnings に添える（数値は出るが意味が壊れているため）", async () => {
+    const user = await createUser();
+    const project = await createProject(user.id);
+    const client = await connectClient(user.id);
+    await client.callTool({
+      name: "update_diagram",
+      arguments: {
+        projectId: project.id,
+        diff: {
+          upsertNodes: [
+            { name: "疲労", kind: "stock", unit: "ポイント", initialValue: 30 },
+            { name: "残業増", kind: "flow", unit: "回", expression: "5" },
+          ],
+          upsertEdges: [
+            {
+              source: "残業増",
+              target: "疲労",
+              polarity: "+",
+              rationale: "残業が疲労を溜める",
+            },
+          ],
+        },
+      },
+    });
+
+    const result = await client.callTool({
+      name: "run_simulation",
+      arguments: { projectId: project.id },
+    });
+    const payload = JSON.parse(textOf(result)) as RunPayload;
+    // 計算自体は最後まで通る。だからこそ warning で意味の破れを知らせる
+    expect(payload.ok).toBe(true);
+    expect(
+      (payload.warnings ?? []).some((w) => w.includes("「ポイント/日」")),
+    ).toBe(true);
+  });
+
   it("run_simulation の overrides は図を変えずに効き、不正なら invalid-override", async () => {
     const user = await createUser();
     const project = await createProject(user.id);
@@ -1400,5 +1843,245 @@ describe("MCP simulation tools", () => {
     const text = (result.messages[0].content as { text: string }).text;
     expect(text).not.toContain("画面左下");
     expect(text).toContain("run_simulation");
+  });
+
+  describe("simConfig の永続化", () => {
+    type ConfigPayload = {
+      ok: boolean;
+      simConfig?: { dt: number; steps: number; timeUnit: string | null };
+      updatedAt?: number;
+      error?: string;
+    };
+
+    async function saveConfig(
+      client: Client,
+      args: Record<string, unknown>,
+    ): Promise<ConfigPayload> {
+      const result = await client.callTool({
+        name: "update_sim_config",
+        arguments: args,
+      });
+      expect(result.isError).toBeFalsy();
+      return JSON.parse(textOf(result)) as ConfigPayload;
+    }
+
+    it("保存した設定を読み直せる（ラウンドトリップ）", async () => {
+      const user = await createUser();
+      const project = await createProject(user.id);
+      const client = await connectClient(user.id);
+
+      const saved = await saveConfig(client, {
+        projectId: project.id,
+        dt: 0.5,
+        steps: 52,
+        timeUnit: "週",
+      });
+      expect(saved.simConfig).toEqual({ dt: 0.5, steps: 52, timeUnit: "週" });
+
+      const read = await client.callTool({
+        name: "get_diagram",
+        arguments: { projectId: project.id },
+      });
+      const payload = JSON.parse(textOf(read)) as ConfigPayload;
+      expect(payload.simConfig).toEqual({ dt: 0.5, steps: 52, timeUnit: "週" });
+    });
+
+    it("送ったキーだけ更新し、省略したキーは元のまま", async () => {
+      const user = await createUser();
+      const project = await createProject(user.id);
+      const client = await connectClient(user.id);
+      await saveConfig(client, {
+        projectId: project.id,
+        dt: 0.5,
+        steps: 52,
+        timeUnit: "週",
+      });
+
+      const updated = await saveConfig(client, {
+        projectId: project.id,
+        steps: 10,
+      });
+      expect(updated.simConfig).toEqual({ dt: 0.5, steps: 10, timeUnit: "週" });
+    });
+
+    it("timeUnit に null を送れば未設定へ戻せる", async () => {
+      const user = await createUser();
+      const project = await createProject(user.id);
+      const client = await connectClient(user.id);
+      await saveConfig(client, { projectId: project.id, timeUnit: "週" });
+
+      const cleared = await saveConfig(client, {
+        projectId: project.id,
+        timeUnit: null,
+      });
+      expect(cleared.simConfig?.timeUnit).toBeNull();
+    });
+
+    it("未設定なら get_diagram は既定値（dt=1 / steps=20）を返す", async () => {
+      const user = await createUser();
+      const project = await createProject(user.id);
+      const client = await connectClient(user.id);
+      const read = await client.callTool({
+        name: "get_diagram",
+        arguments: { projectId: project.id },
+      });
+      const payload = JSON.parse(textOf(read)) as ConfigPayload;
+      expect(payload.simConfig).toEqual({ dt: 1, steps: 20, timeUnit: null });
+    });
+
+    it("他人のプロジェクトには書けない", async () => {
+      const owner = await createUser();
+      const attacker = await createUser();
+      const project = await createProject(owner.id);
+      const client = await connectClient(attacker.id);
+      const result = await client.callTool({
+        name: "update_sim_config",
+        arguments: { projectId: project.id, dt: 2 },
+      });
+      expect(result.isError).toBe(true);
+    });
+
+    it("expectedUpdatedAt が古ければ conflict を返す", async () => {
+      const user = await createUser();
+      const project = await createProject(user.id);
+      const client = await connectClient(user.id);
+      const stale = await client.callTool({
+        name: "update_sim_config",
+        arguments: {
+          projectId: project.id,
+          dt: 2,
+          expectedUpdatedAt: project.updatedAt - 1000,
+        },
+      });
+      const payload = JSON.parse(textOf(stale)) as ConfigPayload;
+      expect(payload.ok).toBe(false);
+      expect(payload.error).toBe("conflict");
+    });
+
+    it("run_simulation / compare_scenarios は引数省略時に保存値を使う", async () => {
+      const user = await createUser();
+      const project = await createProject(user.id);
+      const client = await connectClient(user.id);
+      await createFatigueModel(client, project.id);
+      await saveConfig(client, {
+        projectId: project.id,
+        dt: 0.5,
+        steps: 8,
+        timeUnit: "週",
+      });
+
+      const run = await client.callTool({
+        name: "run_simulation",
+        arguments: { projectId: project.id },
+      });
+      const runPayload = JSON.parse(textOf(run)) as RunPayload & {
+        timeUnit?: string | null;
+      };
+      expect(runPayload.dt).toBe(0.5);
+      expect(runPayload.steps).toBe(8);
+      expect(runPayload.timeUnit).toBe("週");
+
+      const compare = await client.callTool({
+        name: "compare_scenarios",
+        arguments: {
+          projectId: project.id,
+          scenarios: [{ label: "疲労半分", overrides: { 疲労: 15 } }],
+        },
+      });
+      const comparePayload = JSON.parse(textOf(compare)) as {
+        dt: number;
+        steps: number;
+        timeUnit: string | null;
+      };
+      expect(comparePayload.dt).toBe(0.5);
+      expect(comparePayload.steps).toBe(8);
+      expect(comparePayload.timeUnit).toBe("週");
+    });
+
+    it("引数を渡せば保存値より引数が優先される", async () => {
+      const user = await createUser();
+      const project = await createProject(user.id);
+      const client = await connectClient(user.id);
+      await createFatigueModel(client, project.id);
+      await saveConfig(client, { projectId: project.id, dt: 0.5, steps: 8 });
+
+      const run = await client.callTool({
+        name: "run_simulation",
+        arguments: { projectId: project.id, steps: 30 },
+      });
+      const payload = JSON.parse(textOf(run)) as RunPayload;
+      expect(payload.dt).toBe(0.5);
+      expect(payload.steps).toBe(30);
+    });
+  });
+
+  describe("sfdHints（昇格候補）", () => {
+    type HintsPayload = {
+      sfdHints: {
+        total: number;
+        shown: number;
+        suggestions: {
+          name: string;
+          suggestedKind: string;
+          confidence: string;
+          reasons: string[];
+        }[];
+      } | null;
+    };
+
+    async function readHints(client: Client, projectId: string) {
+      const result = await client.callTool({
+        name: "get_diagram",
+        arguments: { projectId },
+      });
+      return (JSON.parse(textOf(result)) as HintsPayload).sfdHints;
+    }
+
+    it("未分類の変数があれば根拠付きの候補を返す", async () => {
+      const user = await createUser();
+      const project = await createProject(user.id);
+      const client = await connectClient(user.id);
+      await client.callTool({
+        name: "update_diagram",
+        arguments: {
+          projectId: project.id,
+          diff: {
+            upsertNodes: [{ name: "疲労" }, { name: "ミス率" }],
+            upsertEdges: [
+              {
+                source: "疲労",
+                target: "ミス率",
+                polarity: "+",
+                rationale: "疲れるとミスが増える",
+              },
+            ],
+          },
+        },
+      });
+
+      const hints = await readHints(client, project.id);
+      expect(hints?.total).toBe(2);
+      const fatigue = hints?.suggestions.find((s) => s.name === "疲労");
+      expect(fatigue?.suggestedKind).toBe("stock");
+      expect(fatigue?.reasons.length).toBeGreaterThanOrEqual(1);
+      const missRate = hints?.suggestions.find((s) => s.name === "ミス率");
+      expect(missRate?.suggestedKind).toBe("auxiliary");
+    });
+
+    it("すべて昇格済みの図では出さない", async () => {
+      const user = await createUser();
+      const project = await createProject(user.id);
+      const client = await connectClient(user.id);
+      await createFatigueModel(client, project.id);
+
+      expect(await readHints(client, project.id)).toBeNull();
+    });
+
+    it("変数の無い図でも落ちない", async () => {
+      const user = await createUser();
+      const project = await createProject(user.id);
+      const client = await connectClient(user.id);
+      expect(await readHints(client, project.id)).toBeNull();
+    });
   });
 });

@@ -314,6 +314,13 @@ export const projects = sqliteTable(
      * schema と parse は src/lib/interview/notes.ts。null = 空ノート
      */
     interviewNotes: text("interview_notes"),
+    /**
+     * シミュレーション設定（JSON 文字列）。{ dt, steps, timeUnit }。
+     * UI のシミュレーションパネルと MCP の run_simulation / compare_scenarios が
+     * 共有する既定値で、null = 未設定（既定値を使う）。
+     * schema と parse は src/lib/diagram/sim-config.ts
+     */
+    simConfig: text("sim_config"),
     createdAt: integer("created_at")
       .notNull()
       .$defaultFn(() => Date.now()),

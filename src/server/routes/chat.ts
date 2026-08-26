@@ -23,6 +23,7 @@ import { lintDiagram } from "@/lib/diagram/lint";
 import { buildLoopEdges } from "@/lib/diagram/loop-edges";
 import { detectLoops } from "@/lib/diagram/loops";
 import { applyMutationPlan } from "@/lib/diagram/mutate";
+import { parseSimConfig } from "@/lib/diagram/sim-config";
 import { loadDiagramSnapshot } from "@/lib/diagram/snapshot";
 import { buildInterviewAgenda } from "@/lib/interview/agenda";
 import {
@@ -82,7 +83,11 @@ export const chatRoute = new Hono().post(
       loops: loopResult.loops,
     };
     const phase = deriveInterviewPhase(notes, phaseInput);
-    const agenda = buildInterviewAgenda(notes, phaseInput, phase);
+    const agenda = buildInterviewAgenda(
+      notes,
+      { ...phaseInput, simConfig: parseSimConfig(project.simConfig) },
+      phase,
+    );
 
     const result = streamText({
       model,

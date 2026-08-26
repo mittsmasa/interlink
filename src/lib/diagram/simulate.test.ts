@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  renameExpressionRefs,
   type SimEdge,
   type SimNode,
   simulate,
@@ -670,5 +671,43 @@ describe("validateExpressionStructure", () => {
   it("参照解決はしない（未定義名でも構文が通れば OK）", () => {
     // 保存時は参照の有無を見ない。実行時に解決する方針
     expect(validateExpressionStructure("存在しない名前 + 1")).toBeNull();
+  });
+});
+
+describe("renameExpressionRefs", () => {
+  it("変数参照の完全一致だけを置き換える", () => {
+    expect(
+      renameExpressionRefs("残業時間 * 0.5", "残業時間", "労働時間"),
+    ).toEqual({ expression: "労働時間 * 0.5", renamed: true });
+  });
+
+  it("部分一致する別の変数名は触らない", () => {
+    expect(
+      renameExpressionRefs("残業時間比率 + 残業時間", "残業時間", "労働時間"),
+    ).toEqual({ expression: "残業時間比率 + 労働時間", renamed: true });
+  });
+
+  it("同名の関数呼び出しは変数参照ではないので触らない", () => {
+    expect(renameExpressionRefs("min(a, b)", "min", "最小")).toEqual({
+      expression: "min(a, b)",
+      renamed: false,
+    });
+  });
+
+  it("参照が無ければ renamed: false", () => {
+    expect(renameExpressionRefs("在庫 * 2", "残業時間", "労働時間")).toEqual({
+      expression: "在庫 * 2",
+      renamed: false,
+    });
+  });
+
+  it("置き換えた式はそのまま実行できる", () => {
+    const { expression } = renameExpressionRefs(
+      "clamp(残業時間 - 休息, 0, 上限)",
+      "残業時間",
+      "労働時間",
+    );
+    expect(expression).toBe("clamp(労働時間 - 休息, 0, 上限)");
+    expect(validateExpressionStructure(expression)).toBeNull();
   });
 });
