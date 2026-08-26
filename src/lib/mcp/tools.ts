@@ -6,7 +6,11 @@ import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
 import { projects } from "@/db/schema";
-import { planDiagramMutation } from "@/lib/diagram/apply-diff";
+import {
+  normalizeName,
+  planDiagramMutation,
+  suggestNodeNames,
+} from "@/lib/diagram/apply-diff";
 import { matchArchetypes } from "@/lib/diagram/archetypes";
 import { diagramDiffSchema } from "@/lib/diagram/diff-schema";
 import { renderDiagramExport } from "@/lib/diagram/export";
@@ -58,6 +62,19 @@ import {
 } from "@/lib/interview/notes";
 import { saveInterviewNotes } from "@/lib/interview/store";
 import {
+  applyLimit,
+  collectNeighborhood,
+  DEFAULT_FOCUS_DEPTH,
+  DIAGRAM_SECTIONS,
+  type GraphLink,
+  MAX_FOCUS_DEPTH,
+  SUMMARY_LINT_LIMIT,
+  SUMMARY_LOOP_LIMIT,
+  SUMMARY_RATIONALE_LENGTH,
+  selectSections,
+  summarizeRationale,
+} from "@/lib/mcp/diagram-view";
+import {
   buildMcpInterviewPrompt,
   deriveGuidance,
   loadGuidance,
@@ -74,6 +91,7 @@ const SERVER_INSTRUCTIONS = `interlink は「問いの構造を図にする」�
 
 - ユーザーの悩みを聞き取りながら図を作るときは、interview プロンプトを使うと聞き取りの方法論と現在地が手に入る（最短の入口）
 - 図を読むには get_diagram。ループ（R/B）・lint 指摘・システム原型・構造指標（metrics: ループの交点 = 介入候補）・挙動と構造の整合（consistency）に加え、聞き取りノートと「次に聞くこと」（interview.phase / interview.agenda）も返る
+- 図が大きくなったら get_diagram を絞る: include で読むセクションだけ選び、focus: {nodeName, depth} でその変数の周りだけを見る。根拠（rationale）の全文と全ループが要るときだけ detail: "full"（既定 summary は要約）
 - 図の書き込みは update_diagram（差分形式）。変数は増減を語れる名詞句にし、因果リンクには根拠（rationale）を必ず添える。相関しか確認できていない関係を因果にしない
 - 図を持ち出すときは export_diagram（mermaid はそのまま描画できる。markdown は根拠付きの表）。プロジェクトの改名は update_project、削除は delete_project（取り消せない。ユーザーの明示的な指示があるときだけ）
 - resources でも読める: interlink://projects（一覧）、interlink://projects/{id}/diagram.md（図の markdown）、interlink://projects/{id}/notes.json（聞き取りノート）
@@ -193,12 +211,13 @@ const INTERVIEW_INTRO_PROMPT = `interlink で聞き取りを始めます。ま�
 
 ユーザーに「いま、どんなことが気がかりですか」と尋ねるところから始めてください。`;
 
-/** ツールの実行結果を MCP の text content に包む */
+/**
+ * ツールの実行結果を MCP の text content に包む。
+ * 整形インデントは付けない（読み手は LLM なので、字下げの分だけトークンを損する）
+ */
 function toResult(payload: unknown) {
   return {
-    content: [
-      { type: "text" as const, text: JSON.stringify(payload, null, 2) },
-    ],
+    content: [{ type: "text" as const, text: JSON.stringify(payload) }],
   };
 }
 
@@ -342,14 +361,45 @@ export function buildMcpServer(userId: string) {
   server.registerTool(
     "get_diagram",
     {
-      description:
-        "プロジェクトの因果ループ図の現在地を返す。変数・因果リンク・式由来の情報リンク（dependencies）に加え、導出済みの検証結果（フィードバックループと R/B 極性、lint 指摘、システム原型マッチ）、構造指標（metrics: ノードごとの次数とループ参加数の上位、介入候補 = 複数ループの交点・R と B の接点）、時間挙動と構造の整合判定（consistency: 期待する構造 / 見つかった構造 / 探り方）を含む。役割（kind）が未分類の変数があれば sfdHints に昇格候補（suggestedKind / confidence / 日本語の根拠）が付く。これは決定的なヒューリスティックによる**提案**で確定ではないので、一時停止テスト（時間を止めても残るか）をユーザーと確かめてから update_diagram で kind を書く。simConfig はシミュレーションの保存設定（dt / steps / timeUnit）で、run_simulation の既定値になる。loops[].id は update_notes の confirmedLoopIds / hypotheses[].loopIds と archetypeMatches[].loopIds が指す ID。極性 ? は式の符号が構造から決まらない極性未定、derived は式由来リンクを含む暫定ループ。updatedAt は update_* の expectedUpdatedAt に渡せる",
+      description: `プロジェクトの因果ループ図の現在地を返す。変数・因果リンク・式由来の情報リンク（dependencies）に加え、導出済みの検証結果（フィードバックループと R/B 極性、lint 指摘、システム原型マッチ）、構造指標（metrics: ノードごとの次数とループ参加数の上位、介入候補 = 複数ループの交点・R と B の接点）、時間挙動と構造の整合判定（consistency: 期待する構造 / 見つかった構造 / 探り方）を含む。役割（kind）が未分類の変数があれば sfdHints に昇格候補（suggestedKind / confidence / 日本語の根拠）が付く。これは決定的なヒューリスティックによる**提案**で確定ではないので、一時停止テスト（時間を止めても残るか）をユーザーと確かめてから update_diagram で kind を書く。simConfig はシミュレーションの保存設定（dt / steps / timeUnit）で、run_simulation の既定値になる。loops[].id は update_notes の confirmedLoopIds / hypotheses[].loopIds と archetypeMatches[].loopIds が指す ID。極性 ? は式の符号が構造から決まらない極性未定、derived は式由来リンクを含む暫定ループ。updatedAt は update_* の expectedUpdatedAt に渡せる。
+
+大きい図（20 変数以上）では include / focus / detail で絞ることを推奨する。include は読むセクションだけを選ぶ（未指定なら全部）。focus: {nodeName, depth} はその変数から depth ホップ（既定 ${DEFAULT_FOCUS_DEPTH}、最大 ${MAX_FOCUS_DEPTH}）以内の部分グラフと、その変数を通るループだけに絞る（「疲労の周りだけ見たい」を 1 呼び出しで）。detail は既定 summary で、rationale を ${SUMMARY_RATIONALE_LENGTH} 字に切り、loops / lintFindings を各 ${SUMMARY_LOOP_LIMIT} 件までにする（切ったかどうかは loopLimit / lintLimit を見る）。根拠の全文や全ループが要るときだけ detail: "full"。focus が効くのは nodes / edges / dependencies / loops だけで、metrics / consistency / archetypeMatches / sfdHints は図全体から導出した値のまま返る（部分グラフで計算し直すと意味が変わるため。archetypeMatches[].loopIds が絞り込み後の loops[].id に無いことがある）`,
       inputSchema: z.object({
         projectId: z.string().min(1).describe("対象プロジェクトの ID"),
+        include: z
+          .array(z.enum(DIAGRAM_SECTIONS))
+          .min(1)
+          .optional()
+          .describe(
+            "返すセクション（未指定なら全部）。nodes / edges（dependencies 同梱）/ loops（loopLimit 同梱）/ lint / archetypes / metrics / sfd（sfdHints と simConfig）/ notes（interviewNotes と consistency）/ interview（phase と agenda）",
+          ),
+        detail: z
+          .enum(["summary", "full"])
+          .optional()
+          .describe(
+            `summary（既定）= rationale を ${SUMMARY_RATIONALE_LENGTH} 字に切り、loops / lintFindings を各 ${SUMMARY_LOOP_LIMIT} 件まで / full = 全文・全件`,
+          ),
+        focus: z
+          .object({
+            nodeName: z.string().min(1).describe("中心にする変数の名前"),
+            depth: z
+              .number()
+              .int()
+              .min(0)
+              .max(MAX_FOCUS_DEPTH)
+              .optional()
+              .describe(
+                `何ホップ先まで含めるか（既定 ${DEFAULT_FOCUS_DEPTH}、最大 ${MAX_FOCUS_DEPTH}）。0 ならその変数だけ`,
+              ),
+          })
+          .optional()
+          .describe(
+            "指定した変数の周りだけに絞る。リンクの向きは問わず上流・下流の両方を辿る",
+          ),
       }),
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async ({ projectId }) => {
+    async ({ projectId, include, detail, focus }) => {
       const project = await findOwnedProject(projectId, userId);
       if (!project) {
         return toError("プロジェクトが見つかりません");
@@ -360,85 +410,185 @@ export function buildMcpServer(userId: string) {
       const loopEdges = buildLoopEdges(diagram);
       const loopResult = detectLoops(diagram.nodes, loopEdges);
       const guidance = deriveGuidance(project, diagram);
-      const metrics = computeDiagramMetrics(
-        diagram.nodes,
-        loopEdges,
-        loopResult.loops,
-      );
       const nameById = new Map(diagram.nodes.map((n) => [n.id, n.name]));
+      const sections = selectSections(include);
+      const full = detail === "full";
+
+      // focus は「その変数の周り」を切り出すだけ。metrics / consistency /
+      // archetypeMatches / sfdHints は図全体の性質なので絞らない
+      // （部分グラフで計算し直すと別のことを言う指標になる）
+      let focusView: {
+        nodeName: string;
+        depth: number;
+        shownNodes: number;
+        totalNodes: number;
+      } | null = null;
+      let visibleNodes = diagram.nodes;
+      let visibleEdges = diagram.edges;
+      let visibleDependencies = dependencies;
+      let visibleLoops = loopResult.loops;
+      if (focus) {
+        const key = normalizeName(focus.nodeName);
+        const center = diagram.nodes.find((n) => normalizeName(n.name) === key);
+        if (!center) {
+          const suggestion = suggestNodeNames(
+            focus.nodeName,
+            diagram.nodes.map((n) => n.name),
+          );
+          return toError(
+            `焦点にする変数「${focus.nodeName}」が図にありません${
+              suggestion.length > 0
+                ? `。近い変数: ${suggestion.join(" / ")}`
+                : ""
+            }`,
+          );
+        }
+        const depth = focus.depth ?? DEFAULT_FOCUS_DEPTH;
+        const links: GraphLink[] = [
+          ...diagram.edges.map((e) => ({
+            from: e.sourceNodeId,
+            to: e.targetNodeId,
+          })),
+          ...dependencies.map((d) => ({ from: d.fromNodeId, to: d.toNodeId })),
+        ];
+        const nodeIds = collectNeighborhood(links, center.id, depth);
+        visibleNodes = diagram.nodes.filter((n) => nodeIds.has(n.id));
+        visibleEdges = diagram.edges.filter(
+          (e) => nodeIds.has(e.sourceNodeId) && nodeIds.has(e.targetNodeId),
+        );
+        visibleDependencies = dependencies.filter(
+          (d) => nodeIds.has(d.fromNodeId) && nodeIds.has(d.toNodeId),
+        );
+        visibleLoops = loopResult.loops.filter((l) =>
+          l.nodeIds.includes(center.id),
+        );
+        focusView = {
+          nodeName: center.name,
+          depth,
+          shownNodes: visibleNodes.length,
+          totalNodes: diagram.nodes.length,
+        };
+      }
+
+      // 上流（detectLoops の MAX_LOOPS 打ち切り）で既に落ちていれば truncated を引き継ぐ
+      const loopView = applyLimit(
+        visibleLoops,
+        full ? MAX_LOOPS : SUMMARY_LOOP_LIMIT,
+        loopResult.truncated,
+      );
+      const lintView = applyLimit(
+        sections.has("lint")
+          ? lintDiagram(diagram.nodes, diagram.edges, {
+              loops: loopResult.loops,
+              confirmedLoopIds: guidance.notes.confirmedLoopIds,
+            })
+          : [],
+        full ? null : SUMMARY_LINT_LIMIT,
+      );
+      const metrics = sections.has("metrics")
+        ? computeDiagramMetrics(diagram.nodes, loopEdges, loopResult.loops)
+        : null;
+
       return toResult({
         project: { id: project.id, title: project.title },
         updatedAt: versionOf(project),
-        nodes: diagram.nodes.map((n) => ({
-          name: n.name,
-          memo: n.memo,
-          unit: n.unit,
-          kind: n.kind,
-          expression: n.expression,
-          initialValue: n.initialValue,
-          value: n.value,
-        })),
-        edges: diagram.edges.map((e) => ({
-          source: e.sourceName,
-          target: e.targetName,
-          polarity: e.polarity,
-          hasDelay: e.hasDelay,
-          rationale: e.rationale,
-          status: e.status,
-        })),
-        dependencies: dependencies.map((d) => ({
-          from: nameById.get(d.fromNodeId) ?? "",
-          to: nameById.get(d.toNodeId) ?? "",
-          polarity: d.polarity,
-        })),
-        loops: loopResult.loops.map((l) => ({
-          id: l.id,
-          label: l.label,
-          polarity: l.polarity,
-          hasDelay: l.hasDelay,
-          derived: l.derived === true,
-          nodeNames: l.nodeNames,
-          edges: l.nodeNames.map((source, i) => ({
-            source,
-            target: l.nodeNames[(i + 1) % l.nodeNames.length],
-          })),
-        })),
-        loopLimit: {
-          truncated: loopResult.truncated,
-          shown: loopResult.loops.length,
-          limit: MAX_LOOPS,
-        },
-        lintFindings: lintDiagram(diagram.nodes, diagram.edges, {
-          loops: loopResult.loops,
-          confirmedLoopIds: guidance.notes.confirmedLoopIds,
-        }),
-        archetypeMatches: matchArchetypes(loopResult.loops),
-        metrics: {
-          nodes: metrics.nodes.slice(0, MAX_METRIC_NODES).map((m) => ({
-            name: m.name,
-            inDegree: m.inDegree,
-            outDegree: m.outDegree,
-            loopCount: m.loopCount,
-            reinforcingLoopCount: m.reinforcingLoopCount,
-            balancingLoopCount: m.balancingLoopCount,
-          })),
-          interventionCandidates: metrics.interventionCandidates
-            .slice(0, MAX_INTERVENTION_CANDIDATES)
-            .map((c) => ({
-              name: c.name,
-              reason: c.reason,
-              description: describeCandidate(c),
-              loopIds: c.loopIds,
-              loopLabels: c.loopLabels,
-            })),
-        },
-        consistency: checkBehaviorConsistency(guidance.notes, loopResult.loops),
-        sfdHints: buildSfdHints(
-          suggestKinds(diagram.nodes, loopEdges, loopResult.loops),
-        ),
-        simConfig: parseSimConfig(project.simConfig),
-        interviewNotes: guidance.notes,
-        interview: { phase: guidance.phase, agenda: guidance.agenda },
+        ...(focusView ? { focus: focusView } : {}),
+        ...(sections.has("nodes")
+          ? {
+              nodes: visibleNodes.map((n) => ({
+                name: n.name,
+                memo: n.memo,
+                unit: n.unit,
+                kind: n.kind,
+                expression: n.expression,
+                initialValue: n.initialValue,
+                value: n.value,
+              })),
+            }
+          : {}),
+        ...(sections.has("edges")
+          ? {
+              edges: visibleEdges.map((e) => ({
+                source: e.sourceName,
+                target: e.targetName,
+                polarity: e.polarity,
+                hasDelay: e.hasDelay,
+                rationale: full ? e.rationale : summarizeRationale(e.rationale),
+                status: e.status,
+              })),
+              dependencies: visibleDependencies.map((d) => ({
+                from: nameById.get(d.fromNodeId) ?? "",
+                to: nameById.get(d.toNodeId) ?? "",
+                polarity: d.polarity,
+              })),
+            }
+          : {}),
+        ...(sections.has("loops")
+          ? {
+              loops: loopView.items.map((l) => ({
+                id: l.id,
+                label: l.label,
+                polarity: l.polarity,
+                hasDelay: l.hasDelay,
+                derived: l.derived === true,
+                nodeNames: l.nodeNames,
+                edges: l.nodeNames.map((source, i) => ({
+                  source,
+                  target: l.nodeNames[(i + 1) % l.nodeNames.length],
+                })),
+              })),
+              loopLimit: loopView.info,
+            }
+          : {}),
+        ...(sections.has("lint")
+          ? { lintFindings: lintView.items, lintLimit: lintView.info }
+          : {}),
+        ...(sections.has("archetypes")
+          ? { archetypeMatches: matchArchetypes(loopResult.loops) }
+          : {}),
+        ...(metrics
+          ? {
+              metrics: {
+                nodes: metrics.nodes.slice(0, MAX_METRIC_NODES).map((m) => ({
+                  name: m.name,
+                  inDegree: m.inDegree,
+                  outDegree: m.outDegree,
+                  loopCount: m.loopCount,
+                  reinforcingLoopCount: m.reinforcingLoopCount,
+                  balancingLoopCount: m.balancingLoopCount,
+                })),
+                interventionCandidates: metrics.interventionCandidates
+                  .slice(0, MAX_INTERVENTION_CANDIDATES)
+                  .map((c) => ({
+                    name: c.name,
+                    reason: c.reason,
+                    description: describeCandidate(c),
+                    loopIds: c.loopIds,
+                    loopLabels: c.loopLabels,
+                  })),
+              },
+            }
+          : {}),
+        ...(sections.has("sfd")
+          ? {
+              sfdHints: buildSfdHints(
+                suggestKinds(diagram.nodes, loopEdges, loopResult.loops),
+              ),
+              simConfig: parseSimConfig(project.simConfig),
+            }
+          : {}),
+        ...(sections.has("notes")
+          ? {
+              consistency: checkBehaviorConsistency(
+                guidance.notes,
+                loopResult.loops,
+              ),
+              interviewNotes: guidance.notes,
+            }
+          : {}),
+        ...(sections.has("interview")
+          ? { interview: { phase: guidance.phase, agenda: guidance.agenda } }
+          : {}),
       });
     },
   );
