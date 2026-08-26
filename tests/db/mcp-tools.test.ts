@@ -25,7 +25,7 @@ function textOf(result: Awaited<ReturnType<Client["callTool"]>>) {
 }
 
 describe("MCP tools", () => {
-  it("tools/list で 11 ツールが列挙される", async () => {
+  it("tools/list で 14 ツールが列挙される", async () => {
     const user = await createUser();
     const client = await connectClient(user.id);
     const { tools } = await client.listTools();
@@ -33,9 +33,12 @@ describe("MCP tools", () => {
       "compare_scenarios",
       "create_project",
       "delete_project",
+      "diff_revisions",
       "export_diagram",
       "get_diagram",
       "list_projects",
+      "list_revisions",
+      "restore_revision",
       "run_simulation",
       "update_diagram",
       "update_notes",

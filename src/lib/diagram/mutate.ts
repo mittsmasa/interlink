@@ -1,15 +1,23 @@
 import "server-only";
 import { eq, inArray } from "drizzle-orm";
 import { db } from "@/db";
-import { edges, nodes, projects } from "@/db/schema";
+import { edges, nodes, projects, type RevisionSource } from "@/db/schema";
 import { type MutationPlan, normalizeName } from "./apply-diff";
+import { saveRevision } from "./revisions";
 
 /**
  * MutationPlan を DB に適用する。
  * createEdges の名前参照は、ノード insert 後に project 全ノードを
  * 読み直して ID へ解決する。
+ *
+ * 適用後の図は同じトランザクション内でリビジョンとして 1 行積む。source は必須にして
+ * ある（既定値を持たせると呼び出し元の追加時に出所を取り違えても気づけない）。
  */
-export async function applyMutationPlan(projectId: string, plan: MutationPlan) {
+export async function applyMutationPlan(
+  projectId: string,
+  plan: MutationPlan,
+  options: { source: RevisionSource },
+) {
   await db.transaction(async (tx) => {
     if (plan.deleteEdgeIds.length > 0) {
       await tx.delete(edges).where(inArray(edges.id, plan.deleteEdgeIds));
@@ -91,5 +99,7 @@ export async function applyMutationPlan(projectId: string, plan: MutationPlan) {
       .update(projects)
       .set({ status: "diagramming", updatedAt: Date.now() })
       .where(eq(projects.id, projectId));
+
+    await saveRevision(tx, projectId, { source: options.source });
   });
 }

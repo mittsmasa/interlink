@@ -38,6 +38,10 @@ export type NodeKind = (typeof NODE_KINDS)[number];
 export const EDGE_STATUSES = ["inferred", "confirmed", "disputed"] as const;
 export type EdgeStatus = (typeof EDGE_STATUSES)[number];
 
+/** 図の更新をどの経路から行ったか。リビジョンの出所として記録する */
+export const REVISION_SOURCES = ["chat", "mcp", "ui"] as const;
+export type RevisionSource = (typeof REVISION_SOURCES)[number];
+
 // ============================================================
 // Better Auth テーブル
 // ============================================================
@@ -435,6 +439,35 @@ export const edges = sqliteTable(
   ],
 );
 
+/**
+ * diagram_revisions — 図の更新ごとに積むスナップショット（追記のみ）。
+ * snapshot は loadDiagramSnapshot の形を JSON 化したもの。summary は
+ * 「1 つ前のリビジョンとの差分」から機械生成する（保存時に確定させ、読むたびに
+ * 計算し直さない）。プロジェクトあたり MAX_REVISIONS_PER_PROJECT 件で古い順に消える。
+ *
+ * id が uuid ではなく autoincrement なのは全順序が要るため。createdAt は ms 精度で
+ * 同一ミリ秒に複数行が入りうるので、順序の基準にはできない。AUTOINCREMENT 指定により
+ * purge 後も id を再利用しないので、消えた ID への参照が別リビジョンを指すことがない。
+ */
+export const diagramRevisions = sqliteTable(
+  "diagram_revisions",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    source: text("source", { enum: REVISION_SOURCES }).notNull(),
+    /** 機械生成した変更要約（例: 「+2 変数 / +3 リンク / R1 が閉じた」） */
+    summary: text("summary").notNull(),
+    /** nodes / edges の全量（JSON 文字列）。schema は lib/diagram/revision-snapshot.ts */
+    snapshot: text("snapshot").notNull(),
+    createdAt: integer("created_at")
+      .notNull()
+      .$defaultFn(() => Date.now()),
+  },
+  (t) => [index("diagram_revisions_project_id_idx").on(t.projectId)],
+);
+
 // ============================================================
 // relations
 // ============================================================
@@ -447,7 +480,18 @@ export const projectsRelations = relations(projects, ({ one, many }) => ({
   messages: many(messages),
   nodes: many(nodes),
   edges: many(edges),
+  revisions: many(diagramRevisions),
 }));
+
+export const diagramRevisionsRelations = relations(
+  diagramRevisions,
+  ({ one }) => ({
+    project: one(projects, {
+      fields: [diagramRevisions.projectId],
+      references: [projects.id],
+    }),
+  }),
+);
 
 export const messagesRelations = relations(messages, ({ one }) => ({
   project: one(projects, {

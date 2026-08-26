@@ -1,6 +1,7 @@
 import { db } from "@/db";
 import {
   apikeys,
+  diagramRevisions,
   edges,
   messages,
   nodes,
@@ -17,6 +18,7 @@ export async function resetDb() {
   await db.delete(edges);
   await db.delete(nodes);
   await db.delete(messages);
+  await db.delete(diagramRevisions);
   await db.delete(projects);
   await db.delete(oauthAccessTokens);
   await db.delete(oauthRefreshTokens);

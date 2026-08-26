@@ -1,6 +1,6 @@
 import "server-only";
 import { asc, eq } from "drizzle-orm";
-import { db } from "@/db";
+import { type DbClient, db } from "@/db";
 import { edges, nodes } from "@/db/schema";
 
 /**
@@ -9,12 +9,20 @@ import { edges, nodes } from "@/db/schema";
  * ツールが複数回呼ばれても常に最新の図を見るために queries/ とは分ける。
  */
 export async function loadDiagramSnapshot(projectId: string) {
+  return loadDiagramSnapshotWith(db, projectId);
+}
+
+/** 実行主体を指定して図を読む。トランザクション内の未コミットの変更も見える */
+export async function loadDiagramSnapshotWith(
+  client: DbClient,
+  projectId: string,
+) {
   const [nodeRows, edgeRows] = await Promise.all([
-    db.query.nodes.findMany({
+    client.query.nodes.findMany({
       where: eq(nodes.projectId, projectId),
       orderBy: [asc(nodes.createdAt)],
     }),
-    db.query.edges.findMany({
+    client.query.edges.findMany({
       where: eq(edges.projectId, projectId),
       orderBy: [asc(edges.createdAt)],
     }),
@@ -29,3 +37,7 @@ export async function loadDiagramSnapshot(projectId: string) {
     })),
   };
 }
+
+export type DiagramSnapshotRows = Awaited<
+  ReturnType<typeof loadDiagramSnapshot>
+>;

@@ -27,6 +27,19 @@ import {
   MAX_METRIC_NODES,
 } from "@/lib/diagram/metrics";
 import { applyMutationPlan } from "@/lib/diagram/mutate";
+import { diffRevisions } from "@/lib/diagram/revision-diff";
+import {
+  parseRevisionSnapshot,
+  type RevisionSnapshot,
+} from "@/lib/diagram/revision-snapshot";
+import {
+  DEFAULT_REVISION_LIST_LIMIT,
+  getRevision,
+  listRevisions,
+  loadCurrentSnapshot,
+  MAX_REVISIONS_PER_PROJECT,
+  restoreRevision,
+} from "@/lib/diagram/revisions";
 import {
   DEFAULT_SIM_DT,
   DEFAULT_SIM_STEPS,
@@ -100,6 +113,7 @@ const SERVER_INSTRUCTIONS = `interlink は「問いの構造を図にする」�
 - warnings は {code, target, message, suggestion} の配列。除外された操作は黙って落ちるので、必ず目を通して suggestion を踏まえて再送する
 - 聞き取った事実（テーマ / 時間挙動 / 理想 / 関係者 / 変数候補）は update_notes に記録する。既定は append（差分だけ送れば既存とマージされる）。整理し直すときだけ mode: "replace" で全体を送る
 - 並行編集を避けたいときは get_diagram / 書き込み応答の updatedAt を expectedUpdatedAt に渡す。不一致なら ok: false と最新の updatedAt が返る
+- 図の更新は毎回スナップショットとして記録される。履歴は list_revisions、リビジョン間（または現在との）差分は diff_revisions、戻すのは restore_revision。誤って変数やリンクを消したときはここから戻す（復元自体も記録されるので履歴は消えない）
 - 書き込み系ツールの応答に含まれる interview.phase / interview.agenda は聞き取りの誘導。対話を進めるときはこれに従う
 - ストック&フロー化した図（kind / 式 / 初期値あり）は run_simulation で時間発展を計算し、stock ごとの要約（初期値・最終値・挙動パターン）で実感と突き合わせる。what-if は compare_scenarios（図は変更しない）
 - CLD を SFD へ昇格させるときは get_diagram の sfdHints（役割の候補と日本語の根拠）を提案の材料にする。役割は文脈で変わるので確定はユーザーに委ね、一時停止テスト（時間を止めても残るか）で確かめてから update_diagram で kind を書く
@@ -669,7 +683,7 @@ export function buildMcpServer(userId: string) {
         loops: detectLoops(current.nodes, buildLoopEdges(current)).loops,
         findings: lintDiagram(current.nodes, current.edges),
       };
-      await applyMutationPlan(projectId, plan);
+      await applyMutationPlan(projectId, plan, { source: "mcp" });
       // 適用後の図で聞き取りの現在地を導出し、構造の変化と次の一手を同梱する
       const after = await loadDiagramSnapshot(projectId);
       const saved = (await findOwnedProject(projectId, userId)) ?? project;
@@ -690,6 +704,173 @@ export function buildMcpServer(userId: string) {
           deletedEdges: plan.deleteEdgeIds.length,
         },
         structure,
+        updatedAt: versionOf(saved),
+        interview: { phase: guidance.phase, agenda: guidance.agenda },
+      });
+    },
+  );
+
+  server.registerTool(
+    "list_revisions",
+    {
+      description: `図の変更履歴を新しい順に返す。図を更新するたびに 1 件積まれ、プロジェクトあたり直近 ${MAX_REVISIONS_PER_PROJECT} 件を保持する。source は更新の出所（chat = アプリのチャット / mcp = このツール経由 / ui = 画面上の直接編集）、summary は「+2 変数 / +3 リンク / R1 が閉じた」形の機械生成要約。id を diff_revisions / restore_revision に渡す`,
+      inputSchema: z.object({
+        projectId: z.string().min(1).describe("対象プロジェクトの ID"),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_REVISIONS_PER_PROJECT)
+          .optional()
+          .describe(
+            `返す件数（既定 ${DEFAULT_REVISION_LIST_LIMIT}、最大 ${MAX_REVISIONS_PER_PROJECT}）`,
+          ),
+      }),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ projectId, limit }) => {
+      const project = await findOwnedProject(projectId, userId);
+      if (!project) {
+        return toError("プロジェクトが見つかりません");
+      }
+      return toResult({
+        revisions: await listRevisions(
+          projectId,
+          limit ?? DEFAULT_REVISION_LIST_LIMIT,
+        ),
+        retained: MAX_REVISIONS_PER_PROJECT,
+        updatedAt: versionOf(project),
+      });
+    },
+  );
+
+  server.registerTool(
+    "diff_revisions",
+    {
+      description:
+        "2 つのリビジョンの間で図がどう変わったかを返す。toRevisionId を省略すると現在の図と比べる。追加/削除/変更された変数とリンク（変更は列ごとの before / after）、その間に閉じた/消えたフィードバックループ、リンクの status 遷移の件数が返る。restore_revision で戻す前に、何が変わるかを確かめるのに使う",
+      inputSchema: z.object({
+        projectId: z.string().min(1).describe("対象プロジェクトの ID"),
+        fromRevisionId: z
+          .number()
+          .int()
+          .describe("比較元のリビジョン ID（list_revisions の id）"),
+        toRevisionId: z
+          .number()
+          .int()
+          .optional()
+          .describe("比較先のリビジョン ID。省略すると現在の図と比べる"),
+      }),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ projectId, fromRevisionId, toRevisionId }) => {
+      const project = await findOwnedProject(projectId, userId);
+      if (!project) {
+        return toError("プロジェクトが見つかりません");
+      }
+      const from = await getRevision(projectId, fromRevisionId);
+      if (!from) {
+        return toResult({
+          ok: false,
+          error: "not-found",
+          message: `リビジョン #${fromRevisionId} が見つかりません。list_revisions で確認してください`,
+        });
+      }
+      const to =
+        toRevisionId === undefined
+          ? null
+          : await getRevision(projectId, toRevisionId);
+      if (toRevisionId !== undefined && !to) {
+        return toResult({
+          ok: false,
+          error: "not-found",
+          message: `リビジョン #${toRevisionId} が見つかりません。list_revisions で確認してください`,
+        });
+      }
+
+      let fromSnapshot: RevisionSnapshot;
+      let toSnapshot: RevisionSnapshot;
+      try {
+        fromSnapshot = parseRevisionSnapshot(from.snapshot);
+        toSnapshot = to
+          ? parseRevisionSnapshot(to.snapshot)
+          : await loadCurrentSnapshot(projectId);
+      } catch {
+        return toResult({
+          ok: false,
+          error: "invalid-snapshot",
+          message: "保存されたリビジョンを読めませんでした",
+        });
+      }
+
+      return toResult({
+        ok: true,
+        from: {
+          id: from.id,
+          createdAt: from.createdAt,
+          source: from.source,
+          summary: from.summary,
+        },
+        to: to
+          ? {
+              id: to.id,
+              createdAt: to.createdAt,
+              source: to.source,
+              summary: to.summary,
+            }
+          : { current: true },
+        diff: diffRevisions(fromSnapshot, toSnapshot),
+        updatedAt: versionOf(project),
+      });
+    },
+  );
+
+  server.registerTool(
+    "restore_revision",
+    {
+      description:
+        "図をリビジョンの状態へ戻す。現在の変数とリンクはすべて置き換わるので、実行前に diff_revisions で何が変わるか確かめること（応答にも同じ差分が入る）。復元は取り消せない操作ではなく、復元自体も新しいリビジョンとして記録されるため履歴は消えず、戻しすぎたらもう一度 restore_revision で戻せる",
+      inputSchema: z.object({
+        projectId: z.string().min(1).describe("対象プロジェクトの ID"),
+        revisionId: z
+          .number()
+          .int()
+          .describe("戻したいリビジョンの ID（list_revisions の id）"),
+        expectedUpdatedAt: expectedUpdatedAtSchema,
+      }),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async ({ projectId, revisionId, expectedUpdatedAt }) => {
+      const project = await findOwnedProject(projectId, userId);
+      if (!project) {
+        return toError("プロジェクトが見つかりません");
+      }
+      const conflict = checkVersion(project, expectedUpdatedAt);
+      if (conflict) return conflict;
+
+      const result = await restoreRevision(projectId, revisionId);
+      if (!result.ok) {
+        return toResult({
+          ok: false,
+          error: "not-found",
+          message: `リビジョン #${revisionId} が見つかりません。list_revisions で確認してください`,
+          updatedAt: versionOf(project),
+        });
+      }
+      const saved = (await findOwnedProject(projectId, userId)) ?? project;
+      const after = await loadDiagramSnapshot(projectId);
+      const guidance = deriveGuidance(saved, after);
+      return toResult({
+        ok: true,
+        restoredFrom: result.restoredFrom,
+        // 復元によって図がどう変わったか（復元前 → 復元後）
+        diff: result.diff,
+        revision: result.revision,
         updatedAt: versionOf(saved),
         interview: { phase: guidance.phase, agenda: guidance.agenda },
       });
