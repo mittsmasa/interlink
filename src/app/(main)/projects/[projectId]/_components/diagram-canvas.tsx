@@ -133,7 +133,7 @@ function DiagramCanvasInner({
         loops: loopResult.loops,
         confirmedLoopIds,
       }),
-      matches: matchArchetypes(loopResult.loops),
+      matches: matchArchetypes(loopResult.loops, loopEdges),
       metrics: computeDiagramMetrics(
         diagram.nodes,
         loopEdges,

@@ -108,6 +108,78 @@ describe("planDiagramMutation", () => {
     ]);
   });
 
+  it("同一ペアの新規エッジが diff 内で重複したら 1 件に畳み、後の指定が勝つ", () => {
+    const result = planDiagramMutation(
+      diagram,
+      diff({
+        upsertEdges: [
+          {
+            source: "疲労",
+            target: "残業時間",
+            polarity: "+",
+            rationale: "先の指定",
+          },
+          {
+            source: " 疲労 ",
+            target: "残業時間",
+            polarity: "-",
+            hasDelay: true,
+            rationale: "後の指定",
+          },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.createEdges).toEqual([
+      {
+        sourceName: " 疲労 ",
+        targetName: "残業時間",
+        polarity: "-",
+        hasDelay: true,
+        rationale: "後の指定",
+        status: "inferred",
+      },
+    ]);
+    expect(result.plan.warnings.map((w) => w.code)).toEqual(["duplicate-edge"]);
+  });
+
+  it("既存ペアへの upsertEdges が diff 内で重複しても更新 1 件に畳まれる", () => {
+    const result = planDiagramMutation(
+      diagram,
+      diff({
+        upsertEdges: [
+          {
+            source: "残業時間",
+            target: "疲労",
+            polarity: "+",
+            rationale: "先の指定",
+          },
+          {
+            source: "残業時間",
+            target: "疲労",
+            polarity: "-",
+            rationale: "後の指定",
+            status: "confirmed",
+          },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.createEdges).toHaveLength(0);
+    expect(result.plan.updateEdges).toEqual([
+      {
+        id: "e1",
+        polarity: "-",
+        hasDelay: false,
+        rationale: "後の指定",
+        status: "confirmed",
+      },
+    ]);
+    expect(result.plan.warnings.map((w) => w.code)).toEqual(["duplicate-edge"]);
+  });
+
   it("新規エッジの status は省略時 inferred、指定時はその値になる", () => {
     const result = planDiagramMutation(
       diagram,

@@ -172,6 +172,61 @@ describe("lintDiagram", () => {
     });
   });
 
+  describe("conflicting-link", () => {
+    const nodes = [
+      { id: "a", name: "残業時間" },
+      { id: "b", name: "疲労" },
+    ];
+    const signed = (
+      id: string,
+      sourceNodeId: string,
+      targetNodeId: string,
+      polarity: "+" | "-",
+    ) => ({ id, sourceNodeId, targetNodeId, polarity });
+
+    it("同じペアに + と − が並んでいたら warning にし、両エッジを指す", () => {
+      const findings = lintDiagram(nodes, [
+        signed("e1", "a", "b", "+"),
+        signed("e2", "a", "b", "-"),
+      ]);
+      const conflicts = findings.filter((f) => f.rule === "conflicting-link");
+      expect(conflicts).toHaveLength(1);
+      expect(conflicts[0]).toMatchObject({
+        severity: "warning",
+        nodeIds: ["a", "b"],
+        edgeIds: ["e1", "e2"],
+      });
+      expect(conflicts[0].message).toContain(
+        "「残業時間」→「疲労」の極性が + と − で食い違っています",
+      );
+      expect(conflicts[0].message).toContain("どちらが実感に近いですか");
+    });
+
+    it("同じペアでも極性が揃っていれば出さない", () => {
+      const findings = lintDiagram(nodes, [
+        signed("e1", "a", "b", "+"),
+        signed("e2", "a", "b", "+"),
+      ]);
+      expect(findings.filter((f) => f.rule === "conflicting-link")).toEqual([]);
+    });
+
+    it("向きが逆のペアは食い違いではなく bidirectional-link のまま", () => {
+      const findings = lintDiagram(nodes, [
+        signed("e1", "a", "b", "+"),
+        signed("e2", "b", "a", "-"),
+      ]);
+      expect(findings.map((f) => f.rule)).toEqual(["bidirectional-link"]);
+    });
+
+    it("極性が渡されていなければ判定しない", () => {
+      const findings = lintDiagram(nodes, [
+        edge("e1", "a", "b"),
+        edge("e2", "a", "b"),
+      ]);
+      expect(findings.filter((f) => f.rule === "conflicting-link")).toEqual([]);
+    });
+  });
+
   describe("speculative-link", () => {
     const nodes = [
       { id: "a", name: "残業時間" },

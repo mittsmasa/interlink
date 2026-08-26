@@ -58,7 +58,8 @@ export async function buildMcpInterviewPrompt(
   project: ProjectRow,
 ): Promise<string> {
   const diagram = await loadDiagramSnapshot(project.id);
-  const loopResult = detectLoops(diagram.nodes, buildLoopEdges(diagram));
+  const loopEdges = buildLoopEdges(diagram);
+  const loopResult = detectLoops(diagram.nodes, loopEdges);
   const guidance = deriveGuidance(project, diagram);
   const verification = {
     loopResult,
@@ -66,7 +67,7 @@ export async function buildMcpInterviewPrompt(
       loops: loopResult.loops,
       confirmedLoopIds: guidance.notes.confirmedLoopIds,
     }),
-    matches: matchArchetypes(loopResult.loops),
+    matches: matchArchetypes(loopResult.loops, loopEdges),
   };
   const prompt = buildInterviewSystemPrompt(diagram, verification, guidance, {
     surface: "mcp",

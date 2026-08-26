@@ -92,6 +92,8 @@ describe("exportDiagramToMarkdown", () => {
       name: "応急処置の失敗",
       description: "対処が副作用で問題を悪化させる構造",
       question: "対処の副作用はありますか",
+      prescription: "副作用が現れるまでの時間を見込んで判断する",
+      pitfalls: "効かないのを対処不足と読み、同じ手を強めてしまう",
       loopIds: ["loop:a→b"],
     },
   ];
@@ -124,6 +126,12 @@ describe("exportDiagramToMarkdown", () => {
     );
     expect(text).toContain(
       "- **応急処置の失敗**（R1）: 対処が副作用で問題を悪化させる構造",
+    );
+    expect(text).toContain(
+      "  - 定石の介入: 副作用が現れるまでの時間を見込んで判断する",
+    );
+    expect(text).toContain(
+      "  - よくある失敗: 効かないのを対処不足と読み、同じ手を強めてしまう",
     );
     expect(text).toContain("- テーマ: 残業が減らない");
     expect(text).toContain("- 時間挙動: increasing — 半年前から増加");

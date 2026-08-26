@@ -306,7 +306,7 @@ export function buildMcpServer(userId: string) {
     "get_diagram",
     {
       description:
-        "プロジェクトの因果ループ図の現在地を返す。変数・因果リンク・式由来の情報リンク（dependencies）に加え、導出済みの検証結果（フィードバックループと R/B 極性、lint 指摘、システム原型マッチ）、構造指標（metrics: ノードごとの次数とループ参加数の上位、介入候補 = 複数ループの交点・R と B の接点）、時間挙動と構造の整合判定（consistency: 期待する構造 / 見つかった構造 / 探り方）を含む。loops[].id は update_notes の confirmedLoopIds / hypotheses[].loopIds と archetypeMatches[].loopIds が指す ID。極性 ? は式の符号が構造から決まらない極性未定、derived は式由来リンクを含む暫定ループ。updatedAt は update_* の expectedUpdatedAt に渡せる",
+        "プロジェクトの因果ループ図の現在地を返す。変数・因果リンク・式由来の情報リンク（dependencies）に加え、導出済みの検証結果（フィードバックループと R/B 極性、lint 指摘、システム原型マッチ = 構造の説明と確認の問いに加え、定石の介入 prescription とよくある失敗 pitfalls）、構造指標（metrics: ノードごとの次数とループ参加数の上位、介入候補 = 複数ループの交点・R と B の接点）、時間挙動と構造の整合判定（consistency: 期待する構造 / 見つかった構造 / 探り方）を含む。loops[].id は update_notes の confirmedLoopIds / hypotheses[].loopIds と archetypeMatches[].loopIds が指す ID。極性 ? は式の符号が構造から決まらない極性未定、derived は式由来リンクを含む暫定ループ。updatedAt は update_* の expectedUpdatedAt に渡せる",
       inputSchema: z.object({
         projectId: z.string().min(1).describe("対象プロジェクトの ID"),
       }),
@@ -375,7 +375,7 @@ export function buildMcpServer(userId: string) {
           loops: loopResult.loops,
           confirmedLoopIds: guidance.notes.confirmedLoopIds,
         }),
-        archetypeMatches: matchArchetypes(loopResult.loops),
+        archetypeMatches: matchArchetypes(loopResult.loops, loopEdges),
         metrics: {
           nodes: metrics.nodes.slice(0, MAX_METRIC_NODES).map((m) => ({
             name: m.name,
