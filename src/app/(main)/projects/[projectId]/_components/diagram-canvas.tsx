@@ -30,6 +30,8 @@ import {
   computeDiagramMetrics,
   type InterventionCandidate,
 } from "@/lib/diagram/metrics";
+import type { SimConfigRecord } from "@/lib/diagram/sim-config";
+import { suggestKinds } from "@/lib/diagram/suggest-kinds";
 import type { Diagram, DiagramEdge, DiagramNode } from "@/lib/queries/diagrams";
 import {
   createEdge,
@@ -56,6 +58,8 @@ type DiagramCanvasProps = {
   diagram: Diagram;
   /** ユーザーが実感で確かめたループ ID（lint の speculative-link 判定に使う） */
   confirmedLoopIds: string[];
+  /** 保存済みのシミュレーション設定（パネルの初期値） */
+  simConfig: SimConfigRecord;
 };
 
 export function DiagramCanvas(props: DiagramCanvasProps) {
@@ -70,6 +74,7 @@ function DiagramCanvasInner({
   projectId,
   diagram,
   confirmedLoopIds,
+  simConfig,
 }: DiagramCanvasProps) {
   const { fitView, screenToFlowPosition } = useReactFlow();
   const { resolvedTheme } = useTheme();
@@ -138,6 +143,14 @@ function DiagramCanvasInner({
         diagram.nodes,
         loopEdges,
         loopResult.loops,
+      ),
+      // 未分類ノードの昇格候補。提案であって確定ではないので、inspector で
+      // ユーザーが選んで初めて kind が付く
+      kindSuggestions: new Map(
+        suggestKinds(diagram.nodes, loopEdges, loopResult.loops).map((s) => [
+          s.nodeId,
+          s,
+        ]),
       ),
     };
   }, [diagram, derivedLoopEdges, confirmedLoopIds]);
@@ -444,7 +457,9 @@ function DiagramCanvasInner({
 
       {diagram.nodes.length > 0 && (
         <SimulationPanel
+          projectId={projectId}
           diagram={diagram}
+          simConfig={simConfig}
           open={openPanel === "simulation"}
           onToggle={() =>
             setOpenPanel((p) => (p === "simulation" ? null : "simulation"))
@@ -467,6 +482,11 @@ function DiagramCanvasInner({
           projectId={projectId}
           selected={selected}
           diagram={diagram}
+          kindSuggestion={
+            selected.kind === "node"
+              ? verification.kindSuggestions.get(selected.node.id)
+              : undefined
+          }
           onClose={() => setSelected(null)}
         />
       )}

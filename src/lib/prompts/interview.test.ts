@@ -283,4 +283,37 @@ describe("formatNotesForPrompt", () => {
     expect(mcp).not.toContain("画面左下");
     expect(mcp).toContain("run_simulation で動きを確認");
   });
+
+  it("昇格候補の参照先と設定の保存先も面で切り替える", () => {
+    const chat = buildInterviewSystemPrompt(
+      { nodes: [], edges: [] },
+      emptyVerification,
+      emptyGuidance,
+    );
+    expect(chat).toContain("昇格は AI 提案 + ユーザー確定");
+    expect(chat).toContain("変数を選んだときに右上へ出る昇格候補");
+    expect(chat).not.toContain("sfdHints");
+
+    const mcp = buildInterviewSystemPrompt(
+      { nodes: [], edges: [] },
+      emptyVerification,
+      emptyGuidance,
+      { surface: "mcp" },
+    );
+    expect(mcp).toContain("sfdHints");
+    expect(mcp).toContain("update_sim_config");
+  });
+
+  it("定量化フェーズでは一時停止テストと時間軸の問いを誘導する", () => {
+    const prompt = buildInterviewSystemPrompt(
+      { nodes: [], edges: [] },
+      emptyVerification,
+      { ...emptyGuidance, phase: "quantify" },
+    );
+    expect(prompt).toContain("いまのフェーズ: 定量化");
+    expect(prompt).toContain("時間を止めても残る量ですか");
+    expect(prompt).toContain("1 ステップを何と見ますか");
+    // 5 フェーズの説明に定量化が並ぶ
+    expect(prompt).toContain("聞き取りは 5 つのフェーズで進みます");
+  });
 });

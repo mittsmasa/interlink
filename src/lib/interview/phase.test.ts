@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
+import type { NodeKind } from "@/db/schema";
 import type { Loop } from "@/lib/diagram/loops";
 import { emptyInterviewNotes, type InterviewNotes } from "./notes";
-import { deriveInterviewPhase, isReadyForInsight } from "./phase";
+import {
+  deriveInterviewPhase,
+  isReadyForInsight,
+  needsQuantification,
+} from "./phase";
 
 const loop: Loop = {
   id: "loop:a→b",
@@ -123,5 +128,116 @@ describe("deriveInterviewPhase", () => {
       const noStatus = { ...both, edges: [{}, { status: null }] };
       expect(isReadyForInsight(notes, noStatus)).toBe(true);
     });
+  });
+
+  describe("quantify", () => {
+    const bLoop: Loop = {
+      ...loop,
+      id: "loop:b→c",
+      label: "B1",
+      polarity: "B",
+    };
+    const confirmed = notesWith({ confirmedLoopIds: [loop.id, bLoop.id] });
+    /** insight 到達済みの図（R と B が確認済み） */
+    const reached = (
+      nodes: {
+        name: string;
+        kind?: NodeKind | null;
+        initialValue?: number | null;
+      }[],
+    ) => ({ nodes, edges: [{}, {}], loops: [loop, bLoop] });
+
+    it("insight 到達でも、昇格も仮説も無ければインサイトのまま", () => {
+      const diagram = reached([{ name: "疲労" }, { name: "ミス率" }]);
+      expect(deriveInterviewPhase(confirmed, diagram)).toBe("insight");
+    });
+
+    it("昇格が始まり未分類が残っていれば定量化（quantify）", () => {
+      const diagram = reached([
+        { name: "疲労", kind: "stock", initialValue: 30 },
+        { name: "ミス率" },
+      ]);
+      expect(deriveInterviewPhase(confirmed, diagram)).toBe("quantify");
+    });
+
+    it("未検証の仮説があっても、昇格が始まっていなければインサイトのまま", () => {
+      // 仮説は refine の段階でも記録される。これを合図にすると
+      // 介入候補を挙げる対話を素通りしてしまう
+      const notes = notesWith({
+        confirmedLoopIds: [loop.id, bLoop.id],
+        hypotheses: [
+          {
+            leveragePoint: "休息",
+            expectedEffect: "疲労が下がる",
+            loopIds: [],
+            status: "proposed",
+          },
+        ],
+      });
+      const diagram = reached([{ name: "疲労" }, { name: "ミス率" }]);
+      expect(deriveInterviewPhase(notes, diagram)).toBe("insight");
+    });
+
+    it("ストックに初期値が無ければ、全ノード昇格済みでも定量化", () => {
+      const diagram = reached([
+        { name: "疲労", kind: "stock", initialValue: null },
+        { name: "残業増", kind: "flow" },
+      ]);
+      expect(deriveInterviewPhase(confirmed, diagram)).toBe("quantify");
+    });
+
+    it("ストックが 1 つも無ければ定量化（時間発展する量が無い）", () => {
+      const diagram = reached([
+        { name: "ミス率", kind: "auxiliary" },
+        { name: "上限", kind: "constant" },
+      ]);
+      expect(deriveInterviewPhase(confirmed, diagram)).toBe("quantify");
+    });
+
+    it("数値が揃えばインサイトへ戻る（仮説を試す番）", () => {
+      const diagram = reached([
+        { name: "疲労", kind: "stock", initialValue: 30 },
+        { name: "残業増", kind: "flow" },
+        { name: "ミス率", kind: "auxiliary" },
+      ]);
+      expect(deriveInterviewPhase(confirmed, diagram)).toBe("insight");
+    });
+
+    it("insight に達していなければ、昇格していても定量化にはならない", () => {
+      const diagram = {
+        nodes: [{ name: "疲労", kind: "stock" as const, initialValue: null }],
+        edges: [{}],
+        loops: [loop],
+      };
+      expect(deriveInterviewPhase(emptyInterviewNotes(), diagram)).toBe(
+        "refine",
+      );
+    });
+  });
+});
+
+describe("needsQuantification", () => {
+  it("未分類が残っていれば未完了", () => {
+    expect(
+      needsQuantification([
+        { name: "疲労", kind: "stock", initialValue: 1 },
+        { name: "ミス率" },
+      ]),
+    ).toBe(true);
+  });
+
+  it("すべて昇格しストックに初期値があれば完了", () => {
+    expect(
+      needsQuantification([
+        { name: "疲労", kind: "stock", initialValue: 0 },
+        { name: "残業増", kind: "flow" },
+      ]),
+    ).toBe(false);
+  });
+
+  it("初期値 0 は「無い」扱いにしない", () => {
+    expect(
+      needsQuantification([{ name: "疲労", kind: "stock", initialValue: 0 }]),
+    ).toBe(false);
   });
 });
