@@ -5,7 +5,6 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { authClient } from "@/lib/auth-client";
-import { isPreview } from "@/lib/env";
 
 export function LoginButton() {
   const [isPending, setIsPending] = useState(false);
@@ -13,17 +12,13 @@ export function LoginButton() {
   const signIn = async () => {
     setIsPending(true);
     try {
-      // preview（OAuth エミュレータ）は genericOAuth プラグイン経由になる
+      // preview（OAuth エミュレータ）では genericOAuth の providerId "google" が
+      // social provider として登録されるので、本番と同じ呼び出しで済む。
       // better-auth クライアントはエラー時に throw せず { error } を返す
-      const { error } = isPreview
-        ? await authClient.signIn.oauth2({
-            providerId: "google",
-            callbackURL: "/",
-          })
-        : await authClient.signIn.social({
-            provider: "google",
-            callbackURL: "/",
-          });
+      const { error } = await authClient.signIn.social({
+        provider: "google",
+        callbackURL: "/",
+      });
       if (error) {
         toast.error("ログインに失敗しました。もう一度お試しください。");
         setIsPending(false);

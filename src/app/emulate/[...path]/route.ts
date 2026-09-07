@@ -37,12 +37,14 @@ const handlersPromise: Promise<EmulateHandlers> =
           : undefined;
 
         // ローカル側のオリジンは appOrigin から導出する。portless 配下では
-        // worktree ごとに割り当て URL が変わるため、固定リストは維持できない
+        // worktree ごとに割り当て URL が変わるため、固定リストは維持できない。
+        // パスは better-auth 1.7 で generic OAuth が social provider に統合された
+        // 後のコールバック（/api/auth/callback/:id）
         const redirectUris = Array.from(
           new Set(
             [appOrigin, branchUrl, deploymentUrl]
               .filter((v): v is string => Boolean(v))
-              .map((origin) => `${origin}/api/auth/oauth2/callback/google`),
+              .map((origin) => `${origin}/api/auth/callback/google`),
           ),
         );
 

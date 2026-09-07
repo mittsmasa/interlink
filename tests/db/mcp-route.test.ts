@@ -118,7 +118,8 @@ describe("動的クライアント登録（DCR）", () => {
         }),
       },
     );
-    expect(res.status).toBe(200);
+    // RFC 7591 §3.2.1 どおり、better-auth 1.7 から登録成功は 201 を返す
+    expect(res.status).toBe(201);
     const client = (await res.json()) as {
       client_id: string;
       redirect_uris: string[];

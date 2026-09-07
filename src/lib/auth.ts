@@ -14,6 +14,8 @@ import { isPreview } from "@/lib/env";
 
 const googleClientId = process.env.GOOGLE_CLIENT_ID ?? "emulate-client";
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET ?? "emulate-secret";
+/** preview の Google OAuth エミュレータ（src/app/emulate/[...path]/route.ts）の基底 URL */
+const emulatorOrigin = `${appOrigin}/emulate/google`;
 
 /**
  * 外部エージェント（MCP クライアント）向けの API キー認証。
@@ -30,19 +32,22 @@ const apiKeyPlugin = apiKey({
  * Bearer トークンしか扱えない MCP クライアント向け。
  * DCR（RFC 7591）で未認証のクライアント自己登録を許可する必要がある。
  * jwt プラグインは oauthProvider の必須依存（署名鍵の管理）。
- * validAudiences に MCP エンドポイントを入れることで、resource パラメータ付きの
- * 認可リクエストが JWT アクセストークンを受け取れる
+ * resources に MCP エンドポイントを入れることで、resource パラメータ付きの
+ * 認可リクエストが JWT アクセストークンを受け取れる（起動時に oauth_resources へ seed される）。
+ * enforcePerClientResources を切っているのは、DCR で自己登録するクライアントは
+ * リソースとのリンク（oauth_client_resources）を持たず、既定の true だと
+ * resource 付き認可が invalid_target になるため。リソースは 1 つしかないので
+ * 全クライアント共通で許可する（1.6 の validAudiences と同じ意味）
  */
 const oauthProviderPlugins = [
   jwt(),
   oauthProvider({
     loginPage: "/login",
     consentPage: "/oauth/consent",
-    validAudiences: [mcpResourceUrl],
+    resources: [mcpResourceUrl],
+    enforcePerClientResources: false,
     allowDynamicClientRegistration: true,
     allowUnauthenticatedClientRegistration: true,
-    // メタデータは src/app/.well-known/ 配下の route handler で配信済み
-    silenceWarnings: { oauthAuthServerConfig: true },
   }),
 ];
 
@@ -68,15 +73,32 @@ export const auth = betterAuth({
                 providerId: "google",
                 clientId: googleClientId,
                 clientSecret: googleClientSecret,
-                discoveryUrl: `${appOrigin}/emulate/google/.well-known/openid-configuration`,
+                // discoveryUrl は使わず endpoint を明示する。
+                // better-auth 1.7 は discovery で jwks_uri が見つかると id_token を
+                // その JWKS で必ず検証するが、@emulators/google は id_token を HS256 で
+                // 署名し JWKS は空を返すため検証に落ちてログインできない。
+                // endpoint 明示なら id_token 検証を組み立てず userinfo だけを使う
+                authorizationUrl: `${emulatorOrigin}/o/oauth2/v2/auth`,
+                tokenUrl: `${emulatorOrigin}/oauth2/token`,
+                userInfoUrl: `${emulatorOrigin}/oauth2/v2/userinfo`,
                 scopes: ["openid", "email", "profile"],
                 pkce: true,
+                // discovery を使わない plain OAuth 扱いでは識別子の既定が `id` になるので、
+                // Google 形式の userinfo に合わせて `sub` を明示する。
+                // 1.7 から mapProfileToUser で id を返すことはできない
+                accountSubject: ({ profile }) => String(profile.sub),
                 mapProfileToUser: (profile) => ({
-                  id: profile.sub,
                   email: profile.email,
                   name: profile.name,
-                  image: profile.picture,
-                  emailVerified: profile.email_verified ?? true,
+                  // 標準クレーム以外は unknown 型で渡ってくる
+                  image:
+                    typeof profile.picture === "string"
+                      ? profile.picture
+                      : undefined,
+                  emailVerified:
+                    typeof profile.email_verified === "boolean"
+                      ? profile.email_verified
+                      : true,
                 }),
               },
             ],
