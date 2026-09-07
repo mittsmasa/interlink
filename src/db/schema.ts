@@ -139,7 +139,9 @@ export const apikeys = sqliteTable(
 /**
  * oauth_clients — @better-auth/oauth-provider のクライアント登録。
  * claude.ai などの MCP クライアントが DCR（RFC 7591）で自己登録する。
- * string[] / json フィールドは adapter が JSON 文字列へ serialize するため text
+ * string[] / json フィールドは adapter が JSON 文字列へ serialize するため text。
+ * 列構成は better-auth 1.7 の期待スキーマに合わせる（adapter が初期化時に
+ * テーブル・列の欠落を検証し、不一致だと認証リクエストを拒否する）
  */
 export const oauthClients = sqliteTable(
   "oauth_clients",
@@ -147,11 +149,15 @@ export const oauthClients = sqliteTable(
     id: text("id").primaryKey(),
     clientId: text("client_id").notNull().unique(),
     clientSecret: text("client_secret"),
+    /** CIMD（Client ID Metadata Document）由来のクライアントの出所。DCR では null */
+    clientDiscoveryId: text("client_discovery_id"),
     disabled: integer("disabled", { mode: "boolean" }).default(false),
     skipConsent: integer("skip_consent", { mode: "boolean" }),
     enableEndSession: integer("enable_end_session", { mode: "boolean" }),
     subjectType: text("subject_type"),
     scopes: text("scopes"),
+    /** client_credentials グラントで許可するスコープ（string[]）。既定は空 */
+    clientCredentialsScopes: text("client_credentials_scopes").default("[]"),
     userId: text("user_id").references(() => users.id, {
       onDelete: "cascade",
     }),
@@ -168,17 +174,91 @@ export const oauthClients = sqliteTable(
     softwareStatement: text("software_statement"),
     redirectUris: text("redirect_uris").notNull(),
     postLogoutRedirectUris: text("post_logout_redirect_uris"),
+    /** OIDC back-channel logout の通知先。登録時に指定したクライアントだけ持つ */
+    backchannelLogoutUri: text("backchannel_logout_uri"),
+    backchannelLogoutSessionRequired: integer(
+      "backchannel_logout_session_required",
+      { mode: "boolean" },
+    ),
     tokenEndpointAuthMethod: text("token_endpoint_auth_method"),
+    /** RFC 7591 の application_type（web / native）。旧 `type` 列の後継 */
+    applicationType: text("application_type"),
+    /** private_key_jwt 用の JWK Set（JSON 文字列）または jwks_uri */
+    jwks: text("jwks"),
+    jwksUri: text("jwks_uri"),
     grantTypes: text("grant_types"),
     responseTypes: text("response_types"),
-    public: integer("public", { mode: "boolean" }),
-    type: text("type"),
     requirePKCE: integer("require_pkce", { mode: "boolean" }),
+    dpopBoundAccessTokens: integer("dpop_bound_access_tokens", {
+      mode: "boolean",
+    }).default(false),
     referenceId: text("reference_id"),
     metadata: text("metadata"),
   },
   (t) => [index("oauth_clients_user_id_idx").on(t.userId)],
 );
+
+/**
+ * oauth_resources — アクセストークンの audience になる保護リソース（RFC 8707）。
+ * auth.ts の oauthProvider({ resources }) から起動時に seed される（insertOnly）。
+ * 現状は MCP エンドポイント 1 件だけ
+ */
+export const oauthResources = sqliteTable("oauth_resources", {
+  id: text("id").primaryKey(),
+  identifier: text("identifier").notNull().unique(),
+  name: text("name").notNull(),
+  accessTokenTtl: integer("access_token_ttl"),
+  refreshTokenTtl: integer("refresh_token_ttl"),
+  signingAlgorithm: text("signing_algorithm"),
+  signingKeyId: text("signing_key_id"),
+  allowedScopes: text("allowed_scopes"),
+  customClaims: text("custom_claims"),
+  dpopBoundAccessTokensRequired: integer("dpop_bound_access_tokens_required", {
+    mode: "boolean",
+  }).default(false),
+  disabled: integer("disabled", { mode: "boolean" }).default(false),
+  createdAt: integer("created_at", { mode: "timestamp" }),
+  updatedAt: integer("updated_at", { mode: "timestamp" }),
+  policyVersion: integer("policy_version").default(1),
+  metadata: text("metadata"),
+});
+
+/**
+ * oauth_client_resources — クライアントと保護リソースのリンク。
+ * enforcePerClientResources を切っているため認可判定には使われないが、
+ * プラグインが登録時に書き込むので列は持つ
+ */
+export const oauthClientResources = sqliteTable(
+  "oauth_client_resources",
+  {
+    id: text("id").primaryKey(),
+    clientId: text("client_id")
+      .notNull()
+      .references(() => oauthClients.clientId, { onDelete: "cascade" }),
+    resourceId: text("resource_id")
+      .notNull()
+      .references(() => oauthResources.identifier, { onDelete: "cascade" }),
+    metadata: text("metadata"),
+    createdAt: integer("created_at", { mode: "timestamp" }),
+  },
+  (t) => [
+    uniqueIndex("oauth_client_resources_client_resource_unq").on(
+      t.clientId,
+      t.resourceId,
+    ),
+    index("oauth_client_resources_client_id_idx").on(t.clientId),
+    index("oauth_client_resources_resource_id_idx").on(t.resourceId),
+  ],
+);
+
+/**
+ * oauth_client_assertions — private_key_jwt の jti 使い捨て記録（リプレイ防止）。
+ * id が jti。DCR クライアントは client_secret / none 認証なので通常は空
+ */
+export const oauthClientAssertions = sqliteTable("oauth_client_assertions", {
+  id: text("id").primaryKey(),
+  expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(),
+});
 
 /**
  * oauth_refresh_tokens — offline_access で発行する opaque リフレッシュトークン。
@@ -199,16 +279,32 @@ export const oauthRefreshTokens = sqliteTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     referenceId: text("reference_id"),
+    /** 発行元の認可コード。コードのリプレイ検出時に紐づくトークンを失効させる */
+    authorizationCodeId: text("authorization_code_id"),
+    /** 認可時に束縛したリソース（string[]）。refresh で広げることはできない */
+    resources: text("resources"),
+    requestedUserInfoClaims: text("requested_user_info_claims"),
     expiresAt: integer("expires_at", { mode: "timestamp" }),
     createdAt: integer("created_at", { mode: "timestamp" }),
     revoked: integer("revoked", { mode: "timestamp" }),
+    /** ローテーション後の再利用猶予（refreshTokenReuseInterval）用 */
+    rotatedAt: integer("rotated_at", { mode: "timestamp" }),
+    rotationReplayResponse: text("rotation_replay_response"),
+    rotationReplayExpiresAt: integer("rotation_replay_expires_at", {
+      mode: "timestamp",
+    }),
     authTime: integer("auth_time", { mode: "timestamp" }),
+    /** DPoP の鍵束縛（cnf）。JSON 文字列 */
+    confirmation: text("confirmation"),
     scopes: text("scopes").notNull(),
   },
   (t) => [
     index("oauth_refresh_tokens_client_id_idx").on(t.clientId),
     index("oauth_refresh_tokens_session_id_idx").on(t.sessionId),
     index("oauth_refresh_tokens_user_id_idx").on(t.userId),
+    index("oauth_refresh_tokens_authorization_code_id_idx").on(
+      t.authorizationCodeId,
+    ),
   ],
 );
 
@@ -231,17 +327,26 @@ export const oauthAccessTokens = sqliteTable(
       onDelete: "cascade",
     }),
     referenceId: text("reference_id"),
+    authorizationCodeId: text("authorization_code_id"),
+    resources: text("resources"),
+    requestedUserInfoClaims: text("requested_user_info_claims"),
     refreshId: text("refresh_id").references(() => oauthRefreshTokens.id, {
       onDelete: "cascade",
     }),
     expiresAt: integer("expires_at", { mode: "timestamp" }),
     createdAt: integer("created_at", { mode: "timestamp" }),
+    /** セッション終了・コードリプレイ検出で失効した時刻 */
+    revoked: integer("revoked", { mode: "timestamp" }),
+    confirmation: text("confirmation"),
     scopes: text("scopes").notNull(),
   },
   (t) => [
     index("oauth_access_tokens_client_id_idx").on(t.clientId),
     index("oauth_access_tokens_session_id_idx").on(t.sessionId),
     index("oauth_access_tokens_user_id_idx").on(t.userId),
+    index("oauth_access_tokens_authorization_code_id_idx").on(
+      t.authorizationCodeId,
+    ),
     index("oauth_access_tokens_refresh_id_idx").on(t.refreshId),
   ],
 );
@@ -258,6 +363,8 @@ export const oauthConsents = sqliteTable(
       onDelete: "cascade",
     }),
     referenceId: text("reference_id"),
+    resources: text("resources"),
+    requestedUserInfoClaims: text("requested_user_info_claims"),
     scopes: text("scopes").notNull(),
     createdAt: integer("created_at", { mode: "timestamp" }),
     updatedAt: integer("updated_at", { mode: "timestamp" }),
@@ -278,6 +385,9 @@ export const jwkss = sqliteTable("jwks", {
   privateKey: text("private_key").notNull(),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   expiresAt: integer("expires_at", { mode: "timestamp" }),
+  /** 署名アルゴリズムと曲線。1.7 で鍵ごとに記録するようになった（旧行は null） */
+  alg: text("alg"),
+  crv: text("crv"),
 });
 
 export const verifications = sqliteTable("verifications", {

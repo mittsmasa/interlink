@@ -6,9 +6,12 @@ import {
   messages,
   nodes,
   oauthAccessTokens,
+  oauthClientAssertions,
+  oauthClientResources,
   oauthClients,
   oauthConsents,
   oauthRefreshTokens,
+  oauthResources,
   projects,
   users,
 } from "@/db/schema";
@@ -23,7 +26,10 @@ export async function resetDb() {
   await db.delete(oauthAccessTokens);
   await db.delete(oauthRefreshTokens);
   await db.delete(oauthConsents);
+  await db.delete(oauthClientResources);
   await db.delete(oauthClients);
+  await db.delete(oauthResources);
+  await db.delete(oauthClientAssertions);
   await db.delete(apikeys);
   await db.delete(users);
 }
